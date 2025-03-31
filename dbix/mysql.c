@@ -29,6 +29,7 @@ static mysql_result_t* lua_tomysql_result(lua_State* L, int index) {
   return (mysql_result_t*)lua_touserdata(L, index);
 }
 
+/* The actual operations. */
 static enum net_async_status f_mysql_fetch_row(int nonblocking, MYSQL_RES* result, MYSQL_ROW* row) {
   if (nonblocking) {
     return mysql_fetch_row_nonblocking(result, row);
@@ -37,6 +38,38 @@ static enum net_async_status f_mysql_fetch_row(int nonblocking, MYSQL_RES* resul
     return NET_ASYNC_COMPLETE;
   }
 }
+
+static enum net_async_status f_mysql_real_connect(mysql_t* mysql, int nonblocking, const char* hostname, const char* username, const char* password, const char* database, int port) {
+  if (nonblocking) {
+    return mysql_real_connect_nonblocking(mysql->db, hostname, username, password, database, port, NULL, 0);
+  }
+  mysql->db = mysql_real_connect(mysql->db, hostname, username, password, database, port, NULL, 0);
+  return mysql->db ? NET_ASYNC_COMPLETE : NET_ASYNC_ERROR;
+}
+
+
+static enum net_async_status f_mysql_real_query(mysql_t* mysql, int nonblocking, const char* statement, size_t statement_length) {
+  if (nonblocking)
+    return mysql_real_query_nonblocking(mysql->db, statement, statement_length);
+  return mysql_real_query(mysql->db, statement, statement_length) ? NET_ASYNC_ERROR : NET_ASYNC_COMPLETE;
+}
+
+static enum net_async_status f_mysql_get_result(mysql_t* mysql, int nonblocking, int use, MYSQL_RES** result) {
+  if (use) {
+    *result = mysql_use_result(mysql->db);
+    if (!result)
+      return NET_ASYNC_ERROR;
+    return NET_ASYNC_COMPLETE;
+  } else {
+    if (nonblocking)
+      return mysql_store_result_nonblocking(mysql->db, result);
+    *result = mysql_store_result(mysql->db);
+    if (!result && mysql_field_count(mysql->db) > 0)
+      return NET_ASYNC_ERROR;
+    return NET_ASYNC_COMPLETE;
+  }
+}
+/* The actual operations. */
 
 typedef enum {
   MYSQL_RESULT_FETCH_STATUS_FETCHING,
@@ -128,6 +161,7 @@ static int f_mysql_result_gc(lua_State* L) {
   mysql_result_t* mysql_result = lua_tomysql_result(L, 1);
   f_mysql_result_close(L);
   luaL_unref(L, LUA_REGISTRYINDEX, mysql_result->connection);
+  return 0;
 }
 
 static const luaL_Reg f_mysql_result_api[] = {
@@ -143,13 +177,6 @@ static mysql_t* lua_tomysql(lua_State* L, int index) {
   return mysql;
 }
 
-static enum net_async_status f_mysql_real_connect(mysql_t* mysql, int nonblocking, const char* hostname, const char* username, const char* password, const char* database, int port) {
-  if (nonblocking) {
-    return mysql_real_connect_nonblocking(mysql->db, hostname, username, password, database, port, NULL, 0);
-  }
-  mysql->db = mysql_real_connect(mysql->db, hostname, username, password, database, port, NULL, 0);
-  return mysql->db ? NET_ASYNC_COMPLETE : NET_ASYNC_ERROR;
-}
 
 static int f_mysql_connectk(lua_State* L, int status, lua_KContext ctx) {
   mysql_t* mysql = lua_tomysql(L, 3);
@@ -186,7 +213,9 @@ static int f_mysql_connect(lua_State* L) {
   mysql->nonblocking = lua_toboolean(L, -1);
   lua_getfield(L, 2, "nonbuffering");
   mysql->use = lua_toboolean(L, -1);
-  lua_pop(L, 2);
+  lua_getfield(L, 2, "nonautocommitting");
+  mysql_autocommit(mysql->db, !lua_toboolean(L, -1));
+  lua_pop(L, 3);
   return f_mysql_connectk(L, 0, 0);
 }
 
@@ -226,27 +255,6 @@ static int f_mysql_gc(lua_State* L) {
   return f_mysql_close(L);
 }
 
-static enum net_async_status f_mysql_real_query(mysql_t* mysql, int nonblocking, const char* statement, size_t statement_length) {
-  if (nonblocking)
-    return mysql_real_query_nonblocking(mysql->db, statement, statement_length);
-  return mysql_real_query(mysql->db, statement, statement_length) ? NET_ASYNC_ERROR : NET_ASYNC_COMPLETE;
-}
-
-static enum net_async_status f_mysql_get_result(mysql_t* mysql, int nonblocking, int use, MYSQL_RES** result) {
-  if (use) {
-    *result = mysql_use_result(mysql->db);
-    if (!result)
-      return NET_ASYNC_ERROR;
-    return NET_ASYNC_COMPLETE;
-  } else {
-    if (nonblocking)
-      return mysql_store_result_nonblocking(mysql->db, result);
-    *result = mysql_store_result(mysql->db);
-    if (!result && mysql_field_count(mysql->db) > 0)
-      return NET_ASYNC_ERROR;
-    return NET_ASYNC_COMPLETE;
-  }
-}
 
 typedef enum {
   STATUS_QUERY,
@@ -319,6 +327,20 @@ static int f_mysql_type(lua_State* L) {
   } else if (strcmp(type, "boolean") == 0) {
     lua_pushliteral(L, "tinyint(1)");
   }
+  lua_getfield(L, 2, "auto_increment");
+  if (lua_isboolean(L, -1)) {
+    lua_pop(L, 1);
+    lua_pushliteral(L, " AUTO_INCREMENT");
+    lua_concat(L, 2);
+  } else {
+    lua_pop(L, 1);
+  }
+  return 1;
+}
+
+static int f_mysql_fd(lua_State* L) {
+  mysql_t* mysql = lua_tomysql(L, 1);
+  lua_pushinteger(L, mysql->db->net.fd);
   return 1;
 }
 
@@ -357,6 +379,7 @@ static const luaL_Reg f_mysql_api[] = {
   { "close",         f_mysql_close          },
   { "query",         f_mysql_query          },
   { "type",          f_mysql_type           },
+  { "fd",            f_mysql_fd             },
   { "txn_start",     f_mysql_txn_start      },
   { "txn_commit",    f_mysql_txn_commit     },
   { "txn_rollback",  f_mysql_txn_rollback   },
