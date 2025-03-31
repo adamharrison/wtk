@@ -56,8 +56,11 @@ static int f_sqlite3_result_fetchk(lua_State* L, int status, lua_KContext ctx) {
       return 1;
     }
     case SQLITE_DONE:
-      f_sqlite3_result_close(L);
-      return 0;
+      if (f_sqlite3_result_close(L) == 2)
+        return 2;
+      lua_pushinteger(L, sqlite3_changes64(sqlite3_result->sqlite->db));
+      lua_pushinteger(L, sqlite3_last_insert_rowid(sqlite3_result->sqlite->db));
+      return 2;
     case SQLITE_BUSY:
       if (sqlite3_result->sqlite->nonblocking && lua_iscoroutine(L))
         return lua_yieldk(L, 0, 0, f_sqlite3_result_fetchk);
@@ -94,9 +97,6 @@ static sqlite3_t* lua_tosqlite3(lua_State* L, int index) {
   sqlite3_t* sqlite3 = (sqlite3_t*)lua_touserdata(L, index);
   return sqlite3;
 }
-
-
-
 
 static int f_sqlite3_query(lua_State* L) {
   sqlite3_t* sqlite = lua_tosqlite3(L, 1);

@@ -301,7 +301,8 @@ static int f_mysql_queryk(lua_State* L, int state, lua_KContext ctx) {
         return 1;
       } else {
         lua_pushinteger(L, mysql_affected_rows(mysql->db));
-        return 1;
+        lua_pushinteger(L, mysql_insert_id(mysql->db));
+        return 2;
       }
     }
   }
