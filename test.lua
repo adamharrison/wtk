@@ -82,15 +82,25 @@ reviews:belongs_to(serieses)
 reviews:belongs_to(entries)
 users:has_many(reviews)
 
-local c = schema:connect('mysql', { 
-  database = 'bookreview',
-  username = 'root',
-  password = '',
-  hostname = 'localhost',
-  port = '3306'
-})
-print(table.concat(c:deploy_statements(), "\n"))
-for user in c.users:search({ first_name = { "Garry" } }):each() do
-  print(user.first_name)
-  print(#user.reviews:all())
+local cr = coroutine.create(function()
+  local c = schema:connect('mysql', { 
+    database = 'bookreview',
+    username = 'root',
+    password = '',
+    hostname = 'localhost',
+    port = '3306',
+    nonblocking = true
+  })
+  print(table.concat(c:deploy_statements(), "\n"))
+  --c:txn(function() 
+    for user in c.users:search({ first_name = { "Garry" } }):each() do
+      print(user.first_name)
+      print(user.reviews:count())
+    end
+  --end)
+end)
+
+while coroutine.status(cr) ~= "dead" do 
+  coroutine.resume(cr)
 end
+

@@ -22,7 +22,6 @@ function schema.new()
   }, schema)
 end
 
-
 function schema:table(t)
   if type(t) == 'string' then
     for i,v in ipairs(self.tables) do if v.name == t then return v end end
@@ -39,8 +38,6 @@ function stable:add_column(c) table.insert(self.columns, c) end
 function stable:belongs_to(t, name, self_columns, foreign_columns) table.insert(self.relationships, { name = name or t.singular, type = "belong_to", self_columns = self_columns or { t.singular .. "_id" }, foreign_table = t, foreign_columns = columns or { "id" } }) end
 function stable:has_many(t, name, self_columns, foreign_columns) table.insert(self.relationships, { name = name or t.plural, type = "has_many", self_columns = self_columns or { "id" }, foreign_table = t, foreign_columns = columns or { self.singular .. "_id" } }) end
 
-
-
 function connection.new(schema, driver, options)
   local self = setmetatable({ }, connection)
   self._schema = schema
@@ -50,14 +47,8 @@ function connection.new(schema, driver, options)
   return self
 end
 function connection:__index(key) return rawget(connection, key) or resultset.new(self, assert(self._schema:table(key), "unknown table " .. key)) end
-
-function connection:translate_type(column)
-  if column.data_type == 'string' then return "varchar(" .. (column.length or 255) .. ")" end
-  if column.data_type == 'boolean' then return "tinyint(1)" end
-  return column.data_type
-end
-
 -- all drivers should provide these functionalities
+function connection:type(column) return self._c:type(column) end
 function connection:close() return self._c:close() end
 function connection:txn_start() return self._c:txn_start() end
 function connection:txn_commit() return self._c:txn_commit() end
@@ -67,7 +58,7 @@ function connection:quote(str) return self._c:quote(str)  end -- "'" .. str:gsub
 function connection:query(statement) -- a statement which does return something
   if self._log then self._log(self, statement) end
   local statement, err = self._c:query(statement)
-  if err then error(err) end
+  if not statement then error(err) end
   return statement
 end
 -- end of functionality to be provided by c modules
@@ -77,7 +68,7 @@ function connection:translate_table(t)
   local table_statement = string.format("CREATE TABLE %s (", self:escape(t.name))
   for i, column in ipairs(t.columns) do
     if i > 1 then table_statement = table_statement .. ", " end
-    table_statement = table_statement .. string.format("%s %s", self:escape(column.name), self:translate_type(column))
+    table_statement = table_statement .. string.format("%s %s", self:escape(column.name), self:type(column))
     if column.not_null then table_statement = table_statement .. " NOT NULL" end
     if column.default then table_statement = table_statement .. " DEFAULT " .. (type(column.default) == 'string' and self:quote(column.default) or column.default) end
     if column.auto_increment then table_statement = table_statement .. " AUTO_INCREMENT"  end
@@ -115,11 +106,11 @@ function connection:deploy(options) for i, statement in ipairs(self:deploy_state
 
 
 function connection:txn(func)
-  self:txn_begin()
+  self:txn_start()
   local status, err = pcall(func)
   if not status then 
     self:txn_rollback()
-    error(err)
+    error(err, 0)
   end
   self:txn_commit()
   return err
@@ -221,7 +212,7 @@ end
 function resultset:as_sql(as_count)
   local statement = "SELECT "
   if as_count then
-    statement = statement .. " COUNT(*)"
+    statement = statement .. "COUNT(*)"
   elseif self._columns then
     statement = statement .. table.concat(map(self._columns, function(e) return self._connection:escape(e) end), ", ")
   else
