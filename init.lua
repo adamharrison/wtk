@@ -153,8 +153,8 @@ local function each_iteration(a, i)
   return result
 end
 
-function resultset:all() local t = {} for row in self:each() do table.insert(t, row) end return t end
 function resultset:each() return each_iteration, { rs = self, statement = self._connection:query(self:as_sql()) }, nil end
+function resultset:all() local t = {} for row in self:each() do table.insert(t, row) end return t end
 function resultset:first() return self:search({}, { rows = 1 }):all()[1] end
 function resultset:count() return math.floor(self._connection:query(self:as_sql(true)):fetch()[1]) end
 function result.new(connection, table, row) return setmetatable({ _connection = connection, _table = table, _row = row }, result) end

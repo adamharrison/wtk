@@ -92,15 +92,16 @@ local cr = coroutine.create(function()
     nonblocking = true
   })
   print(table.concat(c:deploy_statements(), "\n"))
-  --c:txn(function() 
+  c:txn(function() 
     for user in c.users:search({ first_name = { "Garry" } }):each() do
       print(user.first_name)
       print(user.reviews:count())
     end
-  --end)
+  end)
 end)
 
 while coroutine.status(cr) ~= "dead" do 
-  coroutine.resume(cr)
+  local status, err = coroutine.resume(cr)
+  if not status then error(err) end
 end
 

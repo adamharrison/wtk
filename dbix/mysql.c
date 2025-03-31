@@ -8,6 +8,7 @@
 typedef struct {
   MYSQL* db;
   int nonblocking;
+  int use;
 } mysql_t;
 
 typedef struct {
@@ -37,63 +38,28 @@ static enum net_async_status f_mysql_fetch_row(int nonblocking, MYSQL_RES* resul
   }
 }
 
-static int f_mysql_result_fetchk(lua_State* L, int status, lua_KContext ctx) {
+typedef enum {
+  MYSQL_RESULT_FETCH_STATUS_FETCHING,
+  MYSQL_RESULT_FETCH_STATUS_DONE
+} mysql_result_fetch_status_e;
+
+
+static int f_mysql_result_closek(lua_State* L, int status, lua_KContext ctx) {
   mysql_result_t* mysql_result = lua_tomysql_result(L, 1);
-  MYSQL_ROW row;
-  switch (f_mysql_fetch_row(mysql_result->mysql->nonblocking && lua_iscoroutine(L), mysql_result->result, &row)) {
-    case NET_ASYNC_ERROR:
-      lua_pushnil(L);
-      lua_pushstring(L, mysql_error(mysql_result->mysql->db));
-      return 2;
-    case NET_ASYNC_NOT_READY:
-      return lua_yieldk(L, 0, status, f_mysql_result_fetchk);
-  }
-  if (!row)
-    return 0;
-  lua_newtable(L);
-  unsigned long* lengths = mysql_fetch_lengths(mysql_result->result);
-  for (size_t i = 0; i < mysql_result->columns; i++) {
-    if (row[i]) {
-      switch (mysql_result->fields[i].type) {
-        case MYSQL_TYPE_TINY:
-        case MYSQL_TYPE_SHORT:
-        case MYSQL_TYPE_LONG:
-        case MYSQL_TYPE_LONGLONG:
-        case MYSQL_TYPE_INT24:
-          lua_pushinteger(L, atoll(row[i]));
-        break;
-        case MYSQL_TYPE_FLOAT:
-        case MYSQL_TYPE_DOUBLE:
-          lua_pushnumber(L, atof(row[i]));
-        break;
-        case MYSQL_TYPE_NULL: lua_pushnil(L); break;
-        default: lua_pushlstring(L, row[i], lengths[i]); break;
+  if (mysql_result->result) {
+    if (mysql_result->mysql->nonblocking && lua_iscoroutine(L)) {
+      switch (mysql_free_result_nonblocking(mysql_result->result)) {
+        case NET_ASYNC_ERROR:
+          lua_pushnil(L);
+          lua_pushstring(L, mysql_error(mysql_result->mysql->db));
+          return 2;
+        case NET_ASYNC_NOT_READY:
+          return lua_yieldk(L, 0, ctx, f_mysql_result_closek);
       }
     } else {
-      lua_pushnil(L);
+      mysql_free_result(mysql_result->result);
     }
-    lua_rawseti(L, -2, i + 1);
-  }
-  lua_pushinteger(L, mysql_result->columns);
-  return 2;
-}
-static int f_mysql_result_fetch(lua_State* L) {
-  return f_mysql_result_fetchk(L, 0, 0);
-}
-
-static int f_mysql_result_closek(lua_State* L, int status, lua_KContext) {
-  mysql_result_t* mysql_result = lua_tomysql_result(L, 1);
-  if (mysql_result->mysql->nonblocking && lua_iscoroutine(L)) {
-    switch (mysql_free_result_nonblocking(mysql_result->result)) {
-      case NET_ASYNC_ERROR:
-        lua_pushnil(L);
-        lua_pushstring(L, mysql_error(mysql_result->mysql->db));
-        return 2;
-      case NET_ASYNC_NOT_READY:
-        return lua_yieldk(L, 0, status, f_mysql_result_closek);
-    }
-  } else {
-    mysql_free_result(mysql_result->result);
+    mysql_result->result = NULL;
   }
   return 0;
 }
@@ -101,6 +67,62 @@ static int f_mysql_result_closek(lua_State* L, int status, lua_KContext) {
 static int f_mysql_result_close(lua_State* L) {
   return f_mysql_result_closek(L, 0, 0);
 }
+
+static int f_mysql_result_fetchk(lua_State* L, int state, lua_KContext ctx) {
+  mysql_result_t* mysql_result = lua_tomysql_result(L, 1);
+  mysql_result_fetch_status_e status = ctx;
+  switch (status) {
+    case MYSQL_RESULT_FETCH_STATUS_FETCHING: {
+      MYSQL_ROW row;
+      switch (f_mysql_fetch_row(mysql_result->mysql->nonblocking && lua_iscoroutine(L), mysql_result->result, &row)) {
+        case NET_ASYNC_ERROR:
+          lua_pushnil(L);
+          lua_pushstring(L, mysql_error(mysql_result->mysql->db));
+          return 2;
+        case NET_ASYNC_NOT_READY:
+          return lua_yieldk(L, 0, status, f_mysql_result_fetchk);
+      }
+      if (row) {
+        lua_newtable(L);
+        unsigned long* lengths = mysql_fetch_lengths(mysql_result->result);
+        for (size_t i = 0; i < mysql_result->columns; i++) {
+          if (row[i]) {
+            switch (mysql_result->fields[i].type) {
+              case MYSQL_TYPE_TINY:
+              case MYSQL_TYPE_SHORT:
+              case MYSQL_TYPE_LONG:
+              case MYSQL_TYPE_LONGLONG:
+              case MYSQL_TYPE_INT24:
+                lua_pushinteger(L, atoll(row[i]));
+              break;
+              case MYSQL_TYPE_FLOAT:
+              case MYSQL_TYPE_DOUBLE:
+                lua_pushnumber(L, atof(row[i]));
+              break;
+              case MYSQL_TYPE_NULL: lua_pushnil(L); break;
+              default: lua_pushlstring(L, row[i], lengths[i]); break;
+            }
+          } else {
+            lua_pushnil(L);
+          }
+          lua_rawseti(L, -2, i + 1);
+        }
+        lua_pushinteger(L, mysql_result->columns);
+        return 2;
+      } else {
+        status = MYSQL_RESULT_FETCH_STATUS_DONE;
+      }
+    }
+    case MYSQL_RESULT_FETCH_STATUS_DONE: {
+      return f_mysql_result_closek(L, 0, status);
+    }
+  }
+}
+
+static int f_mysql_result_fetch(lua_State* L) {
+  return f_mysql_result_fetchk(L, 0, 0);
+}
+
 
 static int f_mysql_result_gc(lua_State* L) {
   mysql_result_t* mysql_result = lua_tomysql_result(L, 1);
@@ -162,7 +184,9 @@ static int f_mysql_connect(lua_State* L) {
   lua_setmetatable(L, -2);
   lua_getfield(L, 2, "nonblocking");
   mysql->nonblocking = lua_toboolean(L, -1);
-  lua_pop(L, 1);
+  lua_getfield(L, 2, "nonbuffering");
+  mysql->use = lua_toboolean(L, -1);
+  lua_pop(L, 2);
   return f_mysql_connectk(L, 0, 0);
 }
 
@@ -208,13 +232,20 @@ static enum net_async_status f_mysql_real_query(mysql_t* mysql, int nonblocking,
   return mysql_real_query(mysql->db, statement, statement_length) ? NET_ASYNC_ERROR : NET_ASYNC_COMPLETE;
 }
 
-static enum net_async_status f_mysql_store_result(mysql_t* mysql, int nonblocking, MYSQL_RES** result) {
-  if (nonblocking)
-    return mysql_store_result_nonblocking(mysql->db, result);
-  *result = mysql_store_result(mysql->db);
-  if (!result && mysql_field_count(mysql->db) > 0)
-    return NET_ASYNC_ERROR;
-  return NET_ASYNC_COMPLETE;
+static enum net_async_status f_mysql_get_result(mysql_t* mysql, int nonblocking, int use, MYSQL_RES** result) {
+  if (use) {
+    *result = mysql_use_result(mysql->db);
+    if (!result)
+      return NET_ASYNC_ERROR;
+    return NET_ASYNC_COMPLETE;
+  } else {
+    if (nonblocking)
+      return mysql_store_result_nonblocking(mysql->db, result);
+    *result = mysql_store_result(mysql->db);
+    if (!result && mysql_field_count(mysql->db) > 0)
+      return NET_ASYNC_ERROR;
+    return NET_ASYNC_COMPLETE;
+  }
 }
 
 typedef enum {
@@ -229,7 +260,7 @@ static int f_mysql_queryk(lua_State* L, int state, lua_KContext ctx) {
   int status = ctx;
   switch (ctx) {
     case STATUS_QUERY: {
-      switch (f_mysql_real_query(mysql, mysql->nonblocking && lua_iscoroutine(L), statement, statement_length)) {
+      switch (f_mysql_real_query(mysql, mysql->nonblocking && lua_iscoroutine(L),  statement, statement_length)) {
         case NET_ASYNC_ERROR:
           lua_pushnil(L);
           lua_pushstring(L, mysql_error(mysql->db));
@@ -241,7 +272,7 @@ static int f_mysql_queryk(lua_State* L, int state, lua_KContext ctx) {
     }
     case STATUS_STORE: {
       MYSQL_RES* response = NULL;
-      switch (f_mysql_store_result(mysql, mysql->nonblocking && lua_iscoroutine(L), &response)) {
+      switch (f_mysql_get_result(mysql, mysql->nonblocking && lua_iscoroutine(L), mysql->use, &response)) {
         case NET_ASYNC_ERROR:
           lua_pushnil(L);
           lua_pushstring(L, mysql_error(mysql->db));
@@ -292,11 +323,8 @@ static int f_mysql_type(lua_State* L) {
 }
 
 static int f_mysql_txn_start(lua_State* L) {
-  lua_pushcfunction(L, f_mysql_query);
-  lua_pushvalue(L, 1);
   lua_pushliteral(L, "BEGIN");
-  lua_call(L, 2, 2);
-  return 2;
+  return f_mysql_queryk(L, 0, STATUS_QUERY);
 }
 
 static int f_mysql_txn_commit(lua_State* L) {
