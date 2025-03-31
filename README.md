@@ -4,7 +4,7 @@ This is a `luarocks` module inspired by [`DBIx::Class`](https://metacpan.org/pod
 
 ### Key Principles
 
-1. Small.
+1. Smol.
 2. Simple.
 3. Some magic, but not too much.
 4. Nonblockable.
