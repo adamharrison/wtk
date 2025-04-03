@@ -8,8 +8,7 @@ dependencies = {
    "lua >= 5.3"
 }
 source = {
-   url = "https://github.com/adamharrison/lua-dbix.git",
-   tag = "v1.0",
+   url = "git://github.com/adamharrison/lua-dbix.git"
 }
 external_dependencies = {
    LIBSQLITE3 = { header = "sqlite3.h" }

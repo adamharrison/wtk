@@ -17,13 +17,17 @@ Below are my general goals for this project, some of them achieved, others aspir
 
 ## Quickstart
 
-Works like the following:
+To install, use `luarocks`:
 
 ```sh
-luarocks5.4 install dbix dbix-mysql
+luarocks install dbix
+luarocks install dbix.dbd.mysql
+luarocks install dbix.dbd.postgres
+luarocks install dbix.dbd.sqlite3
 ```
 
-This will build the MySQL driver; it assumes you have the MySQL client libraries.
+This will build all drivers as well as the module; you don't need all of these, 
+only really just one.
 
 ```lua
 local dbix = require "dbix"
