@@ -123,7 +123,7 @@ classes which can be used independently.
 | [`schema`](#schema)           | Defines a set of tables and relations.                     |
 | [`connection`](#connecction)  | Represents a connection to a database.                     |
 | [`cschema`](#cschema)         | Represents a schema and a connection together.             |
-| [`table`](#table)`            | Represents a table.                                        |
+| [`table`](#table)             | Represents a table.                                        |
 | [`resultset`](#resultset)     | Represents a set of results from the database.             |
 | [`record`](#record)           | Represents a single row from the database.                 |
 
@@ -138,7 +138,7 @@ classes which can be used independently.
 | Function                   | Description                                                |
 |----------------------------|------------------------------------------------------------|
 | `connect(options)`         | Connects to a database, based on a set of options.         |
-| `table(table|string)`      | Specifies a table, or retrieves a previously specified one.|
+| `table(table\|string)`     | Specifies a table, or retrieves a previously specified one.|
 
 #### connection
 
@@ -157,7 +157,7 @@ guaranteed.
 
 The following functions are optionally supported, and will be no-ops on certain drivers.
 
-| Optional Function          |
+| Optional Function          | Description                                                                     |
 |----------------------------|---------------------------------------------------------------------------------|  
 | `type(conn, type)`         | Translates a standardized type for this specific database. Optionally supported.|
 | `fd(conn)`                 | Returns the file descriptor for the underlying connection. Optinally suppoted.  |
@@ -215,20 +215,23 @@ Represents a single result from the datbase
 | `update(columns?)`         | Updates this record with the specified columns, and any dirty columns.                |
 | `delete()`                 | Removes this record from the database.                                                |
 
+--------------------------------------
 
 ### DBD
 
 Database drivers are C modules that are required from `schema.connect` (or supplied directly as a table/userdata to), and define the following functions.
 
-| Function         | mysql | postgres | sqlite3 | Notes |
-|------------------|-------|----------|---------|-------|
-| `connect`        | ✓     |  ✓       | ✓       |       |
-| `quote`          | ✓     |  ✓       | ✓       |       | 
-| `escape`         | ✓     |  ✓       | ✓       |       | 
-| `close`          | ✓     |  ✓       | ✓       |       | 
-| `query`          | ✓     |  ✓       | ✓       |       | 
-| `type`           | ✓     |  ✓       | ✓       |       |
-| `fd`             | ✓     |  ✓       | ✓       |       |
-| `txn_start`      | ✓     |  ✓       | ✓       |       |
-| `txn_commit`     | ✓     |  ✓       | ✓       |       |
-| `txn_rollback`   | ✓     |  ✓       | ✓       |       |
+See [connection](#connection) for details about each of these methods.
+
+| Function                   | mysql | postgres | sqlite3 | Notes |
+|----------------------------|-------|----------|---------|-------|
+| `connect(options)`         | ✓     |  ✓       | ✓       |       |
+| `quote(conn, string)`      | ✓     |  ✓       | ✓       |       | 
+| `escape(conn, string)`     | ✓     |  ✓       | ✓       |       | 
+| `close(conn)`              | ✓     |  ✓       | ✓       |       | 
+| `query(string)`            | ✓     |  ✓       | ✓       |       | 
+| `type(conn, column)`       | ✓     |  ✓       | ✓       |       |
+| `fd(conn)`                 | ✓     |  ✓       | ✓       |       |
+| `txn_start(conn, options)` | ✓     |  ✓       | ✓       |       |
+| `txn_commit(conn)`         | ✓     |  ✓       | ✓       |       |
+| `txn_rollback(conn)`       | ✓     |  ✓       | ✓       |       |
