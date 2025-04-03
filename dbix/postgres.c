@@ -338,15 +338,12 @@ static int f_postgres_queryk(lua_State* L, int state, lua_KContext ctx) {
           return 2;
         case PGRES_TUPLES_OK:
         case PGRES_SINGLE_TUPLE:
-          fprintf(stderr, "WAT2\n");
           break;
         case PGRES_FATAL_ERROR:
-          fprintf(stderr, "WAT3\n");
           lua_pushnil(L);
           lua_pushstring(L, PQerrorMessage(postgres->db));
           return 2;
         default:
-          fprintf(stderr, "WAT4\n");
           return 0;
       }
       return 1;

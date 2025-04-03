@@ -1,6 +1,6 @@
 local dbix = {}
 
-local schema, stable, resultset, result, connection, connected_schema, raw = {}, {}, {}, {}, {}, {}, {}
+local schema, stable, resultset, result, connection, cschema, raw = {}, {}, {}, {}, {}, {}, {}
 
 local function map(arr, func) local t = {} for i,v in ipairs(arr) do t[i] = func(v, i) end return t end
 local function merge(a,b) local t = {} for k,v in pairs(a) do t[k] = v end for k,v in pairs(b) do t[k] = v end return t end
@@ -16,25 +16,26 @@ dbix.raw = function(str)
   return setmetatable({ str }, raw)
 end
 
-function connected_schema.new(connection, schema)
-  local self = setmetatable({ }, connected_schema)
+function cschema.new(connection, schema)
+  local self = setmetatable({ }, cschema)
   self._connection = connection
   self._schema = schema
   self._c = connection._c
   return self
 end
-function connected_schema:__index(key) return rawget(connected_schema, key) or connection[key] or resultset.new(self, assert(self._schema:table(key), "unknown table " .. key)) end
+function cschema:__index(key) return rawget(cschema, key) or connection[key] or resultset.new(self, assert(self._schema:table(key), "unknown table " .. key)) end
 
-function connected_schema:query(str)
+function cschema:query(str)
   local statement, err = self._connection:query(str)
   if not statement and err then error(err) end
   return statement, err
 end
 
 function schema:connect(driver, options)
-  return connected_schema.new(connection.new(driver, options), self)
+  return cschema.new(connection.new(driver, options), self)
 end
 
+---@class schema
 function schema.new()
   return setmetatable({ 
     tables = {},
@@ -42,6 +43,8 @@ function schema.new()
   }, schema)
 end
 
+--- Looks up, or defines a new table.
+---@param t table|string
 function schema:table(t)
   if type(t) == 'string' then
     for i,v in ipairs(self.tables) do if v.name == t then return v end end
@@ -60,24 +63,25 @@ function stable:has_many(t, name, self_columns, foreign_columns) table.insert(se
 
 function connection.new(driver, options)
   local self = setmetatable({ }, connection)
-  self._driver = assert(require("dbix." .. driver), "can't find driver " .. driver)
+  self._driver = assert(type(driver) == 'string' and require("dbix." .. driver) or driver, "can't find driver " .. driver)
   self._options = options or {}
   self._log = os.getenv("DBIX_TRACE") and function(self, msg) io.stderr:write(msg, "\n") end or options.log or false
   self._c = assert(self._driver:connect(options))
   return self
 end
 -- all drivers should provide these functionalities
-function connection:type(column) return self._c:type(column) end
 function connection:close() return self._c:close() end
-function connection:txn_start() return self._c:txn_start() end
-function connection:txn_commit() return self._c:txn_commit() end
-function connection:txn_rollback() return self._c:txn_rollback() end
-function connection:escape(str) return self._c:escape(str) end --  "`" .. str:gsub("\\", "\\\\"):gsub("`", "\\`") .. "`"
-function connection:quote(str) return self._c:quote(str)  end -- "'" .. str:gsub("\\", "\\\\"):gsub("\"", "\\\"")  .. "'"
+function connection:escape(str) return self._c:escape(str) end
+function connection:quote(str) return self._c:quote(str) end
 function connection:query(statement) 
   if self._log then self._log(self, statement) end
   return self._c:query(statement) 
 end 
+-- optional methods
+function connection:type(column) return self._c.type and self._c:type(column) end
+function connection:txn_start(options) return self._c.txn_start and self._c:txn_start(options) end
+function connection:txn_commit() return self._c.txn_commit and self._c:txn_commit() end
+function connection:txn_rollback() return self._c.txn_rollback and self._c:txn_rollback() end
 -- end of functionality to be provided by c modules
 function connection:txn(func)
   self:txn_start()
@@ -126,12 +130,13 @@ function connection:translate_table(t, options)
   return table_statement
 end
 
-function connected_schema:deploy_statements(options)
+function cschema:deploy_statements(options)
   local c = self._c
+  assert(c.type, "unable to generate deploy statments, driver doesn't supply `type`.")
   if not options then options = {} end
   local statements = {}
   for _, t in ipairs(self._schema.tables) do
-    if options.deploy_drop then self._connection:query(string.format("DROP TABLE %s IF EXISTS", self:escape(t.name))) end
+    if options.drop then self._connection:query(string.format("DROP TABLE %s IF EXISTS", self:escape(t.name))) end
     table.insert(statements, self._connection:translate_table(t, options))
   end
   if self._connection._options.foreign_keys ~= false and options.foreign_keys == false then
@@ -152,7 +157,7 @@ function connected_schema:deploy_statements(options)
   return statements
 end
 
-function connected_schema:deploy(options) for i, statement in ipairs(self:deploy_statements(options)) do self:query(statement) end return self end
+function cschema:deploy(options) for i, statement in ipairs(self:deploy_statements(options)) do self:query(statement) end return self end
 
 
 function resultset.new(connection, t)
@@ -162,7 +167,8 @@ function resultset.new(connection, t)
     return rs
   end
   return setmetatable({
-    _conditions = {},
+    _where = {},
+    _having = {},
     _rows = nil,
     _offset = nil,
     _columns = nil,
@@ -172,17 +178,23 @@ function resultset.new(connection, t)
   }, resultset)
 end
 
-function resultset:search(params, attrs)
+function resultset:search(params)
   local rs = resultset.new(self)
   for k,v in pairs(params) do
-    table.insert(rs._conditions, { [k] = v })
-  end
-  if attrs then
-    if attrs.rows then rs._rows = attrs.rows end
-    if attrs.offset then rs.offset = attrs.offset end
+    table.insert(rs._where, { [k] = v })
   end
   return rs
 end
+resultset.where = resultset.search
+function resultset:having(params)
+  local rs = resultset.new(self)
+  for k,v in pairs(params) do
+    table.insert(rs._having, { [k] = v })
+  end
+  return rs
+end
+function resultset:rows(rows) local rs = resultset.new(self) rs._rows = rows return rs end
+function resultset:offset(offset) local rs = resultset.new(self) rs._offset = offset return rs end
 
 
 local function each_iteration(a, i)
@@ -274,8 +286,8 @@ function resultset:shadow(params) return result.new(self._connection, self._tabl
 function resultset:create(params) return self:shadow(merge(self._default_values, params)):insert() end
 function resultset:delete(params) 
   local statement = "DELETE FROM " .. self._connection:escape(self._table.name) 
-  if self._conditions and #self._conditions > 0 then
-    statement = statement .. " WHERE " .. table.concat(map(self._conditions, function(e) return self:translate_conditions(e) end, " AND "))
+  if self._where and #self._where > 0 then
+    statement = statement .. " WHERE " .. table.concat(map(self._where, function(e) return self:translate_where(e) end, " AND "))
   end
   return self._connection:query(statement)
 end
@@ -286,8 +298,8 @@ function resultset:update(params)
     table.insert(updates, self._connection:escape(k) .. " = " .. self._connection:translate_value(v))
   end
   statement = statement .. table.concat(assert(#updates > 0 and updates, "requires update params"), ", ")
-  if self._conditions and #self._conditions > 0 then
-    statement = statement .. " WHERE " .. table.concat(map(self._conditions, function(e) return self:translate_conditions(e) end, " AND "))
+  if self._where and #self._where > 0 then
+    statement = statement .. " WHERE " .. table.concat(map(self._where, function(e) return self:translate_where(e) end, " AND "))
   end
   return self._connection:query(statement)
 end
@@ -309,7 +321,7 @@ function resultset:translate_conditions(condition)
   if type(condition) == 'string' then return condition end
   for key, value in pairs(condition) do
     if key == "and" or key == "or" then
-      return table.concat(map(value, function(c) return self:translate_condition(c) end), key)
+      return table.concat(map(value, function(c) return self:translate_conditions(c) end), key)
     else
       local t = type(value)
       if t == 'table' and #value > 0 then
@@ -334,8 +346,14 @@ function resultset:as_sql(as_count)
     statement = statement .. table.concat(map(self._table.columns, function(e) return self._connection:escape(e.name) end), ", ")
   end
   statement = statement .. " FROM " .. self._connection:escape(self._table.name) .. " " .. self._connection:escape("me")
-  if self._conditions and #self._conditions > 0 then
-    statement = statement .. " WHERE " .. table.concat(map(self._conditions, function(e) return self:translate_conditions(e) end, " AND "))
+  if self._where and #self._where > 0 then
+    statement = statement .. " WHERE " .. table.concat(map(self._where, function(e) return self:translate_conditions(e) end, " AND "))
+  end
+  if self._group_by and #self._group_by > 0 then
+    statement = statmeent .. " GROUP BY " .. table.concat(map(self._group_by, function(e) return self:translate_conditions(e) end, ", "))
+  end
+  if self._where and #self._having > 0 then
+    statement = statement .. " HAVING " .. table.concat(map(self._having, function(e) return self:translate_conditions(e) end, " AND "))
   end
   if self._offset then statement = statement .. " OFFSET " .. self._offset end
   if self._rows then statement = statement .. " LIMIT " .. self._rows end
