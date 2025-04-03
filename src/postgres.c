@@ -20,6 +20,7 @@
 typedef struct {
   PGconn* db;
   int nonblocking;
+  int nonbuffering;
 } postgres_t;
 
 typedef struct {
@@ -86,10 +87,10 @@ static int postgres_get_result(postgres_result_t* result, int nonblocking) {
 
 static int f_postgres_result_fetchk(lua_State* L, int state, lua_KContext ctx) {
   postgres_result_t* postgres_result = lua_topostgres_result(L, 1);
-  if (postgres_result->result && postgres_result->rows >= postgres_result->current_row) {
+  if (postgres_result->result && postgres_result->current_row >= postgres_result->rows) {
     int status = postgres_get_result(postgres_result, postgres_result->postgres->nonblocking && lua_iscoroutine(L));
     if (status == LUA_YIELD)
-      return lua_yieldk(L, 0, ctx, f_postgres_result_fetchk);
+      return lua_yieldk(L, 0, 0, f_postgres_result_fetchk);
     else if (status == -1) {
       lua_pushnil(L);
       lua_pushstring(L, PQerrorMessage(postgres_result->postgres->db));
@@ -100,9 +101,9 @@ static int f_postgres_result_fetchk(lua_State* L, int state, lua_KContext ctx) {
     return 0;
   lua_newtable(L);
   for (int i = 0; i < postgres_result->columns; ++i) {
-    if (!PQgetisnull(postgres_result->result, ctx, i)) {
-      const char* value = PQgetvalue(postgres_result->result, ctx, i);
-      size_t length = PQgetlength(postgres_result->result, ctx, i);
+    if (!PQgetisnull(postgres_result->result, postgres_result->current_row, i)) {
+      const char* value = PQgetvalue(postgres_result->result, postgres_result->current_row, i);
+      size_t length = PQgetlength(postgres_result->result, postgres_result->current_row, i);
       switch (PQftype(postgres_result->result, i)) {
         case BOOLOID: lua_pushboolean(L, strcmp(value, "t") == 0); break;
         case INT2OID:
@@ -121,6 +122,7 @@ static int f_postgres_result_fetchk(lua_State* L, int state, lua_KContext ctx) {
       lua_pushnil(L);
     lua_rawseti(L, -2, i + 1);
   }
+  postgres_result->current_row++;
   return 1;
 }
 
@@ -239,7 +241,9 @@ static int f_postgres_connect(lua_State* L) {
   lua_setmetatable(L, -2);
   lua_getfield(L, 2, "nonblocking");
   postgres->nonblocking = lua_toboolean(L, -1);
-  lua_pop(L, 1);
+  lua_getfield(L, 2, "nonbuffering");
+  postgres->nonbuffering = lua_toboolean(L, -1);
+  lua_pop(L, 2);
   return f_postgres_connectk(L, 0, 0);
 }
 
@@ -415,7 +419,7 @@ static const luaL_Reg f_postgres_api[] = {
   { NULL,        NULL                       }
 };
 
-int luaopen_dbix_postgres(lua_State* L) {
+int luaopen_dbix_dbd_postgres(lua_State* L) {
   lua_newtable(L);
   luaL_setfuncs(L, f_postgres_api, 0);
   lua_pushvalue(L, -1);

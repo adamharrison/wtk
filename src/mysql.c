@@ -8,7 +8,7 @@
 typedef struct {
   MYSQL* db;
   int nonblocking;
-  int use;
+  int nonbuffering;
 } mysql_t;
 
 typedef struct {
@@ -54,8 +54,8 @@ static enum net_async_status f_mysql_real_query(mysql_t* mysql, int nonblocking,
   return mysql_real_query(mysql->db, statement, statement_length) ? NET_ASYNC_ERROR : NET_ASYNC_COMPLETE;
 }
 
-static enum net_async_status f_mysql_get_result(mysql_t* mysql, int nonblocking, int use, MYSQL_RES** result) {
-  if (use) {
+static enum net_async_status f_mysql_get_result(mysql_t* mysql, int nonblocking, int nonbuffering, MYSQL_RES** result) {
+  if (nonbuffering) {
     *result = mysql_use_result(mysql->db);
     if (!result)
       return NET_ASYNC_ERROR;
@@ -212,7 +212,7 @@ static int f_mysql_connect(lua_State* L) {
   lua_getfield(L, 2, "nonblocking");
   mysql->nonblocking = lua_toboolean(L, -1);
   lua_getfield(L, 2, "nonbuffering");
-  mysql->use = lua_toboolean(L, -1);
+  mysql->nonbuffering = lua_toboolean(L, -1);
   lua_getfield(L, 2, "nonautocommitting");
   mysql_autocommit(mysql->db, !lua_toboolean(L, -1));
   lua_pop(L, 3);
@@ -280,7 +280,7 @@ static int f_mysql_queryk(lua_State* L, int state, lua_KContext ctx) {
     }
     case STATUS_STORE: {
       MYSQL_RES* response = NULL;
-      switch (f_mysql_get_result(mysql, mysql->nonblocking && lua_iscoroutine(L), mysql->use, &response)) {
+      switch (f_mysql_get_result(mysql, mysql->nonblocking && lua_iscoroutine(L), mysql->nonbuffering, &response)) {
         case NET_ASYNC_ERROR:
           lua_pushnil(L);
           lua_pushstring(L, mysql_error(mysql->db));
@@ -387,7 +387,7 @@ static const luaL_Reg f_mysql_api[] = {
   { NULL,        NULL                       }
 };
 
-int luaopen_dbix_mysql(lua_State* L) {
+int luaopen_dbix_dbd_mysql(lua_State* L) {
   lua_newtable(L);
   luaL_setfuncs(L, f_mysql_api, 0);
   lua_pushvalue(L, -1);

@@ -172,6 +172,8 @@ function resultset.new(connection, t)
     _rows = nil,
     _offset = nil,
     _columns = nil,
+    _group_by = nil,
+    _order_by = nil,
     _default_values = {},
     _connection = connection,
     _table = t
@@ -195,6 +197,8 @@ function resultset:having(params)
 end
 function resultset:rows(rows) local rs = resultset.new(self) rs._rows = rows return rs end
 function resultset:offset(offset) local rs = resultset.new(self) rs._offset = offset return rs end
+function resultset:group_by(columns) local rs = resultset.new(self) rs._group_by = type(columns) == 'table' and columns or { columns } return rs end
+function resultset:order_by(columns) local rs = resultset.new(self) rs._order_by = type(columns) == 'table' and columns or { columns } return rs end
 
 
 local function each_iteration(a, i)
@@ -207,8 +211,13 @@ end
 
 function resultset:each() return each_iteration, { rs = self, statement = self._connection:query(self:as_sql()) }, nil end
 function resultset:all() local t = {} for row in self:each() do table.insert(t, row) end return t end
-function resultset:first() return self:search({}, { rows = 1 }):all()[1] end
-function resultset:count() return math.floor(self._connection:query(self:as_sql(true)):fetch()[1]) end
+function resultset:first() return self:search({}):rows(1):all()[1] end
+function resultset:count() 
+  local query = self._connection:query(self:as_sql(true))
+  local count = math.floor(query:fetch()[1]) 
+  query:close()
+  return count
+end
 function result.new(connection, table, row) return setmetatable({ _connection = connection, _table = table, _row = row, _dirty = {} }, result) end
 
 function result:__index(key)
@@ -354,6 +363,9 @@ function resultset:as_sql(as_count)
   end
   if self._where and #self._having > 0 then
     statement = statement .. " HAVING " .. table.concat(map(self._having, function(e) return self:translate_conditions(e) end, " AND "))
+  end
+  if self._where and #self._having > 0 then
+    statement = statement .. " ORDER BY " .. table.concat(map(self._order_by, function(e) return self._connection:escape(e) end, ", "))
   end
   if self._offset then statement = statement .. " OFFSET " .. self._offset end
   if self._rows then statement = statement .. " LIMIT " .. self._rows end

@@ -195,7 +195,7 @@ Represents a set of results from the database.
 |----------------------------|---------------------------------------------------------------------------------------|
 | `first()`                  | Returns the first record of a query.                                                  |
 | `all()`                    | Returns all records from a query in a table.                                          |  
-| `each()`                   | Efficiently iterates through one record at a time.                                    |  
+| `each()`                   | Returns an iterator that efficiently iterates through one record at a time.           |  
 | `where(conditions)`        | Adds `WHERE` conditions to existing conditions with `AND`.                            |  
 | `search(conditions)`       | Synonym for `where`.                                                                  |  
 | `having(conditions)`       | Adds `HAVING` conditions to existing conditions with `AND`.                           |  
