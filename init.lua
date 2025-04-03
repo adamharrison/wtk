@@ -63,7 +63,7 @@ function stable:has_many(t, name, self_columns, foreign_columns) table.insert(se
 
 function connection.new(driver, options)
   local self = setmetatable({ }, connection)
-  self._driver = assert(type(driver) == 'string' and require("dbix." .. driver) or driver, "can't find driver " .. driver)
+  self._driver = assert(type(driver) == 'string' and require("dbix.dbd." .. driver) or driver, "can't find driver " .. driver)
   self._options = options or {}
   self._log = os.getenv("DBIX_TRACE") and function(self, msg) io.stderr:write(msg, "\n") end or options.log or false
   self._c = assert(self._driver:connect(options))
