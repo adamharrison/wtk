@@ -347,6 +347,7 @@ static int f_mysql_fd(lua_State* L) {
 
 static int f_mysql_txn_start(lua_State* L) {
   lua_pushliteral(L, "BEGIN");
+  lua_replace(L, -2);
   return f_mysql_queryk(L, 0, STATUS_QUERY);
 }
 

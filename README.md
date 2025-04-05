@@ -186,6 +186,7 @@ Represents a table in a database.
 |-------------------------------------------------------------------------------|----------------------------------------------------------------------------|
 | `belongs_to(self, name, foreign?, self_columns?, foreign_columns?, options?)` | Specifies a `one-to-many` relation between `self` and a `foreign` `table`. |
 | `has_many(self, name, foreign?, self_columns?, foreign_columns?, options?)`   | Specifies a `many-to-one` relation between `self` and a `foreign` `table`. |
+| `has_one(self, name, foreign?, self_columns?, foreign_columns?, options?)`    | Specifies a `one-to-one` relation between `self` and a `foreign` `table`.  |
 
 #### resultset
 
