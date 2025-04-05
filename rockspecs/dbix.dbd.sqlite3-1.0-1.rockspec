@@ -16,6 +16,6 @@ external_dependencies = {
 build = {
    type = "builtin",
    modules = {
-      ["dbix.dbd.sqlite3"] = { sources = {"src/sqlite3.c"}, libraries = {"sqlite3"}, incdirs = {"$(LIBSQLITE3_INCDIR)"}, libdirs = {"$(LIBSQLITE3_LIBDIR)"} }
+      ["dbix.dbd.sqlite3"] = { sources = {"src/dbd/sqlite3.c"}, libraries = {"sqlite3"}, incdirs = {"$(LIBSQLITE3_INCDIR)"}, libdirs = {"$(LIBSQLITE3_LIBDIR)"} }
    }
 }

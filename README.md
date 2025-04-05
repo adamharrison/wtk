@@ -1,37 +1,20 @@
-# lua-dbix
+# lua simple modules
 
-This is a `luarocks` module inspired by [`DBIx::Class`](https://metacpan.org/pod/DBIx::Class), my favorite ORM.
-
-## Key Principles
-
-Below are my general goals for this project, some of them achieved, others aspirational.
-
-1. Smol.
-2. Simple.
-3. Some magic, but not too much.
-4. Optionally nonblockable via lua coroutines.
-5. Supports at least MySQL/MariaDB, PostgresSQL and sqlite3.
-6. Easily overridable to cover the cases we don't.
-7. Stand-alone; doesn't require `restty` or `lapis` or anything else.
-8. Well documented.
+These are a bunch of non-blocking modules that can be easily packaged into a single binary application.
 
 ## Quickstart
 
-To install, use `luarocks`:
-
-```sh
-luarocks install dbix
-luarocks install dbix.dbd.mysql
-luarocks install dbix.dbd.postgres
-luarocks install dbix.dbd.sqlite3
-```
-
-This will build all drivers as well as the module; you don't need all of these, 
-only really just one.
+Here's an example of a non-blocking webserver server with a database connection.
 
 ```lua
-local dbix = require "dbix"
-local schema = dbix.schema.new()
+local DBIX = require "dbix"
+local Server = require "sserver"
+local Loop = Server.Loop
+local Countdown = Server.Countdown
+local loop = Loop.new()
+local args = Server.pargs({ ... }, { host = "string", port = "integer", verbose = "flag", timeout = "integer",  })
+
+local schema = DBIX.schema.new()
 local users = schema:table({
   name = "users",
   columns = {
@@ -45,198 +28,121 @@ local users = schema:table({
   primary_key = { "id" }
 })
 
-local serieses = schema:table({
-  name = "serieses",
-  singular = "series",
-  columns = {
-    { name = "id", auto_increment = true, data_type = "int", not_null = true },
-    { name = "updated", data_type = "datetime", not_null = true },
-    { name = "created", data_type = "datetime", not_null = true },
-    { name = "title", data_type = "string", length = 255 },
-    { name = "category", data_type = "string", length = 16 }
-  },
-  primary_key = { "id" }
-})
-
-local reviews = schema:table({
-  name = "reviews",
-  columns = {
-    { name = "id", auto_increment = true, data_type = "int", not_null = true },
-    { name = "updated", data_type = "datetime", not_null = true },
-    { name = "created", data_type = "datetime", not_null = true },
-    { name = "score", data_type = "float" },
-    { name = "content", data_type = "text" },
-    { name = "series_id", data_type = "int", not_null = true },
-    { name = "user_id", data_type = "int", not_null = true },
-  },
-  primary_key = { "id" }
-})
-reviews:belongs_to(users)
-reviews:belongs_to(serieses)
-users:has_many(reviews)
-
-local cr = coroutine.create(function()
-  local c = schema:connect('mysql', { 
-    database = 'bookreview',
+local function get_db()
+  return schema:connect('mysql', { 
+    database = 'userexample',
     username = 'root',
     password = '',
     hostname = 'localhost',
     port = '3306',
     nonblocking = true
   })
-  print(table.concat(c:deploy_statements(), "\n"))
-  c:txn(function() 
-    print("Finding all Garrys...")
-    for user in c.users:search({ first_name = { "Garry" } }):each() do
-      print("User ID: ", user.id)
-      print("Email: ", user.email)
-      print("Review Count: ", user.reviews:count())
-    end
-    local user = c.users:create({ first_name = "John", last_name = "Smith", updated = os.date("%Y-%m-%dT%H:%M:%S"), created = os.date("%Y-%m-%dT%H:%M:%S") })
-    print("Automatically assigned id: " .. user.id)
-    user.email = "example@example.com"
-    user:update()
-    print("Updated existing user.")
-    user:update({ last_name = "DeWalt" })
-    local review = user.reviews:create({ series_id = 10, updated = os.date("%Y-%m-%dT%H:%M:%S"), created = os.date("%Y-%m-%dT%H:%M:%S") })
-    print("New review id: " .. review.id)
-    print("Updating all my reviews to 10/10.")
-    user.reviews:update({ score = 10 })
-    print("Increment all my scores to 20/10.")
-    user.reviews:update({ score = dbix.raw("score + 10") })
-    print("Deleting all user reviews.")
-    user.reviews:delete()
-    print("Deleting user.")
-    user:delete()
-  end)
-end)
+end
 
+server = Server.new({ 
+  host = args.host or "0.0.0.0", 
+  port = args.port or 9090, 
+  timeout = args.timeout or 10,
+  verbose = args.verbose,
+  handler = function(request)
+    local db = get_db()
+    if request.method == "GET" then
+      if request.path == "/" then
+        request.client:file("static/client.html")
+      elseif request.path:find("^/static/[^/]+$") then
+        request.client:file(request.path:sub(2))
+      elseif request.path:find("^/users$") then
+        local t = { }
+        for user in db.users:each() do
+          table.insert(t, string.format("User ID: %d, First Name: %s, Last Name: %s", user.id, user.first_name, user.last_name))
+        end
+        request:respond(200, { "Content-Type" = "text/plain" }, table.concat(t, "\n"))
+      elseif request.path:find("^/ws")
+        local ws = request:websocket()
+        ws:send("This is a packet in a websocket.")
+        while true do
+          coroutine.yield({ timeout = 10 })
+          ws:send("This was sent after 10 seconds.")
+        end
+        ws:close()
+      else
+        request:respond(404, { }, "Not Found")
+      end
+    end
+  end
+}):add(loop)
+-- give a basic console
+loop:add(0, function()
+  local line = io.stdin:read("*line")
+  if line then
+    if line == "quit" then os.exit(0) end
+    local f, err = load(line, "=CLI")
+    if f then
+      _, err = pcall(f)
+    end
+    if err then
+      server.log:error(err)
+    end
+  else
+    return false
+  end
+end)
+loop:run()
 ```
 
-## API
+And of course, if you want, you can pack the whole thing into a single binary by simply using `git add submodule` to add
+this repository into your project, and then simply symlinking the relevant source files you'd like to include into the main
+directory, and using the following build script and `main.c`:
 
-### High-Level API
+```bash
+: ${CC=gcc}
+: ${CFLAGS=-O3 -s}
+: ${BIN=server}
+[[ "$@" == "clean" ]] && rm -rf packed.c lua $BIN && exit 0
+[[ ! -e "packed.c" && ! -e "lua" ]] && $CC lib/lua/onelua.c -o lua -lm
+[[ ! -e "packed.c" ]] && scripts/pack.lua *.lua > packed.c
+$CC -DMAKE_LIB=1 -Ilib/lua lib/lua/onelua.c *.c -lm -lmysqlclient -o $BIN $@
+```
 
-#### dbix
+```c
+#include <lua.h>
+#include <lualib.h>
+#include <lauxlib.h>
 
-`dbix` is the module that is returned from requiring this module. It has several internal
-classes which can be used independently.
+#ifdef PACKED_LUA
+	extern const char* packed_luac[];
+#else
+	static const char* packed_luac[] = { NULL, NULL, NULL };
+#endif
 
-| Class                         | Description                                                |
-|-------------------------------|------------------------------------------------------------|
-| [`schema`](#schema)           | Defines a set of tables and relations.                     |
-| [`connection`](#connecction)  | Represents a connection to a database.                     |
-| [`cschema`](#cschema)         | Represents a schema and a connection together.             |
-| [`table`](#table)             | Represents a table.                                        |
-| [`resultset`](#resultset)     | Represents a set of results from the database.             |
-| [`record`](#record)           | Represents a single row from the database.                 |
+int luaopen_sserver_driver(lua_State* L);
+int luaopen_dbix_dbd_mysql(lua_State* L);
+
+int main(int argc, char* argv[]) {
+  lua_State* L = luaL_newstate();
+  luaL_openlibs(L);
+  lua_getfield(L, LUA_GLOBALSINDEX, "package");
+  lua_getfield(L, -1, "preload");
+  luaopen_sserver_driver(L);
+  lua_setfield(L, -2, "sserver.driver");
+  luaopen_dbix_dbd_mysql(L);
+  lua_setfield(L, -2, "dbix.dbd.mysql");
+	for (int i = 0; packed_luac[i]; i += 3) {
+		if (luaL_loadbuffer(L, packed_luac[i+1], (size_t)packed_luac[i+2], packed_luac[i])) {
+			fprintf(stderr, "Error loading %s: %s", packed_luac[i], lua_tostring(L, -1));
+			return -1;
+		}
+		lua_setfield(L, -2, packed_luac[i]);
+	}
+	lua_pop(L, 1);
+	luaL_loadstring(L, "(package.preload.init or loadfile(\"init.lua\"))(...)");
+	for (int i = 1; i < argc; ++i) 
+		lua_pushstring(L, argv[i]);
+  if (lua_pcall(L, argc - 1, LUA_MULTRET, 0))
+		fprintf(stderr, "error initializing server: %s\n", lua_tostring(L, -1));
+  lua_close(L);
+  return 0;
+}
+```
 
 
-| Function                   | Description                                                |
-|----------------------------|------------------------------------------------------------|
-| `raw(str)`                 | Allows you to pass raw sql directly into queries.          |    
-
-
-#### schema
-
-| Function                   | Description                                                |
-|----------------------------|------------------------------------------------------------|
-| `connect(options)`         | Connects to a database, based on a set of options.         |
-| `table(table\|string)`     | Specifies a table, or retrieves a previously specified one.|
-
-#### connection
-
-The methods specified here and thin wrappers over the methods supplied by a given `driver`.
-
-Not all functions are supported across all drivers, only the first set of functions specified below are
-guaranteed.
-
-| Function                   | Description                                                                           |
-|----------------------------|---------------------------------------------------------------------------------------|
-| `new(driver, options?)`    | Connects to a database, based on a driver, set of options.                            |
-| `quote(conn, string)`      | Quotes a string as a string.                                                          |  
-| `escape(conn, literal)`    | Escapes a literal.                                                                    |  
-| `close(conn)`              | Closes the connection to the database.                                                |  
-| `query(conn, query)`       | Runs a query against the database connection. Returns `resutlset` or `int` and `int`  |
-
-The following functions are optionally supported, and will be no-ops on certain drivers.
-
-| Optional Function          | Description                                                                     |
-|----------------------------|---------------------------------------------------------------------------------|  
-| `type(conn, type)`         | Translates a standardized type for this specific database. Optionally supported.|
-| `fd(conn)`                 | Returns the file descriptor for the underlying connection. Optinally suppoted.  |
-| `txn_start(conn, options?)`| Starts a transaction. Optionally supported.                                     |
-| `txn_commit(conn)`         | Commits a transaction. Optionally supported.                                    |  
-| `txn_rollback(conn)`       | Rolls back a transaction. Optionally supported.                                 |  
-| `txn(conn, func)`          | Calls `func` inside a transaction, and commits if no errors have occurred.      |  
-
-#### cschema
-
-Any method from `schema` or `connection` can be called here on a `cschema`. In addition, it has the following methods.
-
-| Function                   | Description                                                                                |
-|----------------------------|--------------------------------------------------------------------------------------------|
-| `<table_name>`             | Referencing a table's name will return a [`resultset`](#resultset) relevant to this table. |
-
-#### table
-
-Represents a table in a database.
-
-| Function                                                                      | Description                                                                |
-|-------------------------------------------------------------------------------|----------------------------------------------------------------------------|
-| `belongs_to(self, name, foreign?, self_columns?, foreign_columns?, options?)` | Specifies a `one-to-many` relation between `self` and a `foreign` `table`. |
-| `has_many(self, name, foreign?, self_columns?, foreign_columns?, options?)`   | Specifies a `many-to-one` relation between `self` and a `foreign` `table`. |
-| `has_one(self, name, foreign?, self_columns?, foreign_columns?, options?)`    | Specifies a `one-to-one` relation between `self` and a `foreign` `table`.  |
-
-#### resultset
-
-Represents a set of results from the database.
-
-| Function                   | Description                                                                           |
-|----------------------------|---------------------------------------------------------------------------------------|
-| `first()`                  | Returns the first record of a query.                                                  |
-| `all()`                    | Returns all records from a query in a table.                                          |  
-| `each()`                   | Returns an iterator that efficiently iterates through one record at a time.           |  
-| `where(conditions)`        | Adds `WHERE` conditions to existing conditions with `AND`.                            |  
-| `search(conditions)`       | Synonym for `where`.                                                                  |  
-| `having(conditions)`       | Adds `HAVING` conditions to existing conditions with `AND`.                           |  
-| `rows(max_rows)`           | Retrieves at most `max_rows` in `all` and `each`.                                     |
-| `prefetch(relation)`       | Adds clauses to retrieve the named `relation` in a single query.                      |
-| `group_by(column)`         | Groups the resultset by the specified column or list of columns.                      |
-| `create(columns)`          | Creates a record with the specified `WHERE` values as well as `columns` values.       |
-| `update(columns)`          | Updates all relevant records in this resultset with the specified column values.      |
-| `delete(columns)`          | Deletes all relevant records in this resultset.                                       |
-| `as_sql(as_count)`         | Converts this resultset to an SQL expression.                                         |
-
-#### result
-
-Represents a single result from the datbase
-
-| Function                   | Description                                                                           |
-|----------------------------|---------------------------------------------------------------------------------------|
-| `<column name>`            | Returns the specified column for this record.                                         |
-| `<column name>=`           | Assigns a value to this column and flags it as dirty for `update`.                    |
-| `insert()`                 | Inserts this record into the database if possible.                                    |
-| `update(columns?)`         | Updates this record with the specified columns, and any dirty columns.                |
-| `delete()`                 | Removes this record from the database.                                                |
-
---------------------------------------
-
-### DBD
-
-Database drivers are C modules that are required from `schema.connect` (or supplied directly as a table/userdata to), and define the following functions.
-
-See [connection](#connection) for details about each of these methods.
-
-| Function                   | mysql | postgres | sqlite3 | Notes |
-|----------------------------|-------|----------|---------|-------|
-| `connect(options)`         | ✓     |  ✓       | ✓       |       |
-| `quote(conn, string)`      | ✓     |  ✓       | ✓       |       | 
-| `escape(conn, string)`     | ✓     |  ✓       | ✓       |       | 
-| `close(conn)`              | ✓     |  ✓       | ✓       |       | 
-| `query(string)`            | ✓     |  ✓       | ✓       |       | 
-| `type(conn, column)`       | ✓     |  ✓       | ✓       |       |
-| `fd(conn)`                 | ✓     |  ✓       | ✓       |       |
-| `txn_start(conn, options)` | ✓     |  ✓       | ✓       |       |
-| `txn_commit(conn)`         | ✓     |  ✓       | ✓       |       |
-| `txn_rollback(conn)`       | ✓     |  ✓       | ✓       |       |

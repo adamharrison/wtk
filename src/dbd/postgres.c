@@ -42,6 +42,13 @@ static postgres_result_t* lua_topostgres_result(lua_State* L, int index) {
   return (postgres_result_t*)lua_touserdata(L, index);
 }
 
+static int lua_yieldpostgres(lua_State* L, postgres_t* postgres, lua_KContext ctx, lua_KFunction func) {
+  lua_newtable(L);
+  lua_pushinteger(L, PQsocket(postgres->db));
+  lua_setfield(L, -2, "socket");
+  return lua_yieldk(L, 1, ctx, func);
+}
+
 static int f_postgres_result_closek(lua_State* L, int status, lua_KContext should_yield) {
   postgres_result_t* postgres_result = lua_topostgres_result(L, 1);
   while (postgres_result->result) {
@@ -53,8 +60,8 @@ static int f_postgres_result_closek(lua_State* L, int status, lua_KContext shoul
       return 2;
     }
     if (PQisBusy(postgres_result->postgres->db)) {
-      if (should_yield)
-        return lua_yieldk(L, 0, should_yield, f_postgres_result_closek);
+      if (should_yield) 
+        return lua_yieldpostgres(L, postgres_result->postgres, should_yield, f_postgres_result_closek);
       return -1;
     }
     if (postgres_result->result)
@@ -89,9 +96,9 @@ static int f_postgres_result_fetchk(lua_State* L, int state, lua_KContext ctx) {
   postgres_result_t* postgres_result = lua_topostgres_result(L, 1);
   if (postgres_result->result && postgres_result->current_row >= postgres_result->rows) {
     int status = postgres_get_result(postgres_result, postgres_result->postgres->nonblocking && lua_iscoroutine(L));
-    if (status == LUA_YIELD)
-      return lua_yieldk(L, 0, 0, f_postgres_result_fetchk);
-    else if (status == -1) {
+    if (status == LUA_YIELD) {
+        return lua_yieldpostgres(L, postgres_result->postgres, ctx, f_postgres_result_fetchk);
+    } else if (status == -1) {
       lua_pushnil(L);
       lua_pushstring(L, PQerrorMessage(postgres_result->postgres->db));
       return 2;
@@ -209,12 +216,13 @@ static int f_postgres_connectk(lua_State* L, int status, lua_KContext ctx) {
         lua_pushnil(L);
         lua_pushstring(L, PQerrorMessage(postgres->db));
         return 2;
-      } else if (result == 0)
-        return lua_yieldk(L, 0, ctx, f_postgres_connectk);
+      } else if (result == 0) {
+        return lua_yieldpostgres(L, postgres, ctx, f_postgres_connectk);
+      }
       int poll = PQconnectPoll(postgres->db);
       switch (poll) {
-        case PGRES_POLLING_READING: return lua_yieldk(L, 0, CONNECTION_STARTED_WAIT_READ, f_postgres_connectk);
-        case PGRES_POLLING_WRITING: return lua_yieldk(L, 0, CONNECTION_STARTED_WAIT_WRITE, f_postgres_connectk);
+        case PGRES_POLLING_READING: return lua_yieldpostgres(L, postgres, CONNECTION_STARTED_WAIT_READ, f_postgres_connectk);
+        case PGRES_POLLING_WRITING: return lua_yieldpostgres(L, postgres, CONNECTION_STARTED_WAIT_WRITE, f_postgres_connectk);
         case PGRES_POLLING_FAILED:
           lua_pushnil(L);
           lua_pushstring(L, PQerrorMessage(postgres->db));
@@ -316,9 +324,9 @@ static int f_postgres_queryk(lua_State* L, int state, lua_KContext ctx) {
     case QUERY_WAITING: {
       postgres_result_t* result = lua_touserdata(L, -1);
       int status = postgres_get_result(result, postgres->nonblocking && lua_iscoroutine(L)); // get first result
-      if (status == LUA_YIELD)
-        return lua_yieldk(L, 0, QUERY_WAITING, f_postgres_queryk);
-      else if (status == -1) {
+      if (status == LUA_YIELD) {
+        return lua_yieldpostgres(L, postgres, QUERY_WAITING, f_postgres_queryk);
+      } else if (status == -1) {
         lua_pushnil(L);
         lua_pushstring(L, PQerrorMessage(postgres->db));
         return 2;
@@ -333,9 +341,9 @@ static int f_postgres_queryk(lua_State* L, int state, lua_KContext ctx) {
           else
             lua_pushinteger(L, insertedValue);
           int status = postgres_get_result(result, postgres->nonblocking && lua_iscoroutine(L)); 
-          if (status == LUA_YIELD)
-            return lua_yieldk(L, 0, QUERY_WAITING, f_postgres_queryk);
-          else if (status == -1) {
+          if (status == LUA_YIELD) {
+            return lua_yieldpostgres(L, postgres, QUERY_WAITING, f_postgres_queryk);
+          } else if (status == -1) {
             lua_pushnil(L);
             lua_pushstring(L, PQerrorMessage(postgres->db));
           }

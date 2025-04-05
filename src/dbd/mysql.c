@@ -19,6 +19,26 @@ typedef struct {
   size_t columns;
 } mysql_result_t;
 
+
+static mysql_t* lua_tomysql(lua_State* L, int index) {
+  mysql_t* mysql = (mysql_t*)lua_touserdata(L, index);
+  return mysql;
+}
+
+static int lua_yieldmysql(lua_State* L, mysql_t* mysql, lua_KContext ctx, lua_KFunction func) {
+  lua_newtable(L);
+  lua_pushinteger(L, mysql->db->net.fd);
+  lua_setfield(L, -2, "socket");
+  return lua_yieldk(L, 1, ctx, func);
+}
+
+static int f_mysql_fd(lua_State* L) {
+  mysql_t* mysql = lua_tomysql(L, 1);
+  lua_pushinteger(L, mysql->db->net.fd);
+  return 1;
+}
+
+
 static int lua_iscoroutine(lua_State* L) {
   int is_coroutine = !lua_pushthread(L);
   lua_pop(L, 1);
@@ -87,7 +107,7 @@ static int f_mysql_result_closek(lua_State* L, int status, lua_KContext ctx) {
           lua_pushstring(L, mysql_error(mysql_result->mysql->db));
           return 2;
         case NET_ASYNC_NOT_READY:
-          return lua_yieldk(L, 0, ctx, f_mysql_result_closek);
+          return lua_yieldmysql(L, mysql_result->mysql, ctx, f_mysql_result_closek);
       }
     } else {
       mysql_free_result(mysql_result->result);
@@ -113,7 +133,7 @@ static int f_mysql_result_fetchk(lua_State* L, int state, lua_KContext ctx) {
           lua_pushstring(L, mysql_error(mysql_result->mysql->db));
           return 2;
         case NET_ASYNC_NOT_READY:
-          return lua_yieldk(L, 0, status, f_mysql_result_fetchk);
+          return lua_yieldmysql(L, mysql_result->mysql, status, f_mysql_result_fetchk);
       }
       if (row) {
         lua_newtable(L);
@@ -172,12 +192,6 @@ static const luaL_Reg f_mysql_result_api[] = {
 };
 
 
-static mysql_t* lua_tomysql(lua_State* L, int index) {
-  mysql_t* mysql = (mysql_t*)lua_touserdata(L, index);
-  return mysql;
-}
-
-
 static int f_mysql_connectk(lua_State* L, int status, lua_KContext ctx) {
   mysql_t* mysql = lua_tomysql(L, 3);
   lua_getfield(L, 2, "hostname");
@@ -197,7 +211,7 @@ static int f_mysql_connectk(lua_State* L, int status, lua_KContext ctx) {
       return 2;
     case NET_ASYNC_NOT_READY: {
       lua_pop(L, 5);
-      return lua_yieldk(L, 0, 0, f_mysql_connectk);
+      return lua_yieldmysql(L, mysql, ctx, f_mysql_connectk);
     }
   }
   lua_pop(L, 5);
@@ -265,7 +279,6 @@ static int f_mysql_queryk(lua_State* L, int state, lua_KContext ctx) {
   mysql_t* mysql = lua_tomysql(L, 1);
   size_t statement_length;
   const char* statement = luaL_checklstring(L, 2, &statement_length);
-  int status = ctx;
   switch (ctx) {
     case STATUS_QUERY: {
       switch (f_mysql_real_query(mysql, mysql->nonblocking && lua_iscoroutine(L),  statement, statement_length)) {
@@ -274,9 +287,9 @@ static int f_mysql_queryk(lua_State* L, int state, lua_KContext ctx) {
           lua_pushstring(L, mysql_error(mysql->db));
           return 2;
         case NET_ASYNC_NOT_READY:
-          return lua_yieldk(L, 0, status, f_mysql_queryk);
+          return lua_yieldmysql(L, mysql, ctx, f_mysql_queryk);
       }
-      status = STATUS_STORE;
+      ctx = STATUS_STORE;
     }
     case STATUS_STORE: {
       MYSQL_RES* response = NULL;
@@ -286,7 +299,7 @@ static int f_mysql_queryk(lua_State* L, int state, lua_KContext ctx) {
           lua_pushstring(L, mysql_error(mysql->db));
           return 2;
         case NET_ASYNC_NOT_READY:
-          return lua_yieldk(L, 0, status, f_mysql_queryk);
+          return lua_yieldmysql(L, mysql, ctx, f_mysql_queryk);
       }
       if (response) {  
         mysql_result_t* result = lua_newuserdata(L, sizeof(mysql_result_t));
@@ -336,12 +349,6 @@ static int f_mysql_type(lua_State* L) {
   } else {
     lua_pop(L, 1);
   }
-  return 1;
-}
-
-static int f_mysql_fd(lua_State* L) {
-  mysql_t* mysql = lua_tomysql(L, 1);
-  lua_pushinteger(L, mysql->db->net.fd);
   return 1;
 }
 

@@ -1,7 +1,7 @@
-package = "dbix"
+package = "sserver"
 version = "1.0-1"
 description = {
-   summary = "An alternate dbi module, inspired by perl's DBIx::Class.",
+   summary = "A simple non-blocking webserver.",
    detailed = [[
       Allows for non-blocking use via coroutines.
    ]],
@@ -16,6 +16,7 @@ source = {
 build = {
    type = "builtin",
    modules = {
-      dbix = "dbix.lua"
+      sserver = "sserver.lua",
+      ["sserver.driver"] = { sources = {"src/sserver/driver.c"} }
    }
 }

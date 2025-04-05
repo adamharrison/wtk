@@ -82,6 +82,37 @@ reviews:belongs_to(serieses)
 reviews:belongs_to(entries)
 users:has_many(reviews)
 
+schema:table({ 
+  name = "people",
+  columns = {
+    { name = "id", data_type = "int", not_null = true },
+    { name = "name", data_type = "string", not_null = true },
+    { name = "birthday", data_type = "datetime" },
+    { name = "deathday", data_type = "datetime" }
+  }
+})
+
+--local cr = coroutine.create(function() 
+--  local c = schema:connect('mysql', { 
+--    database = 'bookreview',
+--    username = 'root',
+--    password = '',
+--    hostname = 'localhost',
+--    port = '3306',
+--    nonblocking = true
+--  })
+--  for series in c.serieses:rows(10):each() do
+--    print(series.title)
+--  end
+--  print(c.serieses:first().title)
+--  print(c.serieses:first().title)
+-- end)
+-- while coroutine.status(cr) ~= "dead" do
+--   coroutine.resume(cr)
+-- end
+
+--os.exit(0)
+
 local cr = coroutine.create(function()
   local c = schema:connect('mysql', { 
     database = 'bookreview',
@@ -93,9 +124,38 @@ local cr = coroutine.create(function()
   })
   print(table.concat(c:deploy_statements(), "\n"))
   c:txn(function() 
+    print("Finding all Garrys...")
     for user in c.users:search({ first_name = { "Garry" } }):each() do
-      print(user.first_name)
-      print(user.reviews:count())
+      print("User ID: ", user.id)
+      print("Email: ", user.email)
+      print("Review Count: ", user.reviews:count())
+    end
+    local user = c.users:create({ first_name = "John", last_name = "Smith", updated = os.date("%Y-%m-%dT%H:%M:%S"), created = os.date("%Y-%m-%dT%H:%M:%S") })
+    print("Automatically assigned id: " .. user.id)
+    user.email = "example@example.com"
+    user:update()
+    print("Updated existing user.")
+    user:update({ last_name = "DeWalt" })
+    local review = user.reviews:create({ series_id = 10, updated = os.date("%Y-%m-%dT%H:%M:%S"), created = os.date("%Y-%m-%dT%H:%M:%S") })
+    print("New review id: " .. review.id)
+    print("Updating all my reviews to 10/10.")
+    user.reviews:update({ score = 10 })
+    print("Increment all my scores to 20/10.")
+    user.reviews:update({ score = dbix.raw("score + 10") })
+    print("Deleting all user reviews.")
+    user.reviews:delete()
+    print("Deleting user.")
+    user:delete()
+    print("Total Reviews: " .. c.users:first().reviews:count())
+    print("Fetching a user and their reviews in a single SQL statement.")
+    local user = c.users:prefetch("reviews"):first()
+    print("This resultset has been auto-fetched, and does not need to make another SQL query.")
+    for review in user.reviews:each() do
+      print("Review Score: " .. review.score)
+    end
+    print("We can also go the other way.")
+    for review in c.reviews:prefetch("user"):distinct(true):each() do
+      print("User Name: " .. review.user.first_name)
     end
   end)
 end)

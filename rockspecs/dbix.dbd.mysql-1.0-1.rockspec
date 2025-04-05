@@ -16,6 +16,6 @@ external_dependencies = {
 build = {
    type = "builtin",
    modules = {
-      ["dbix.dbd.mysql"] = { sources = {"src/mysql.c"}, libraries = {"mysqlclient"}, incdirs = {"$(LIBMYSQL_INCDIR)/mysql"}, libdirs = {"$(LIBMYSQL_LIBDIR)"} }
+      ["dbix.dbd.mysql"] = { sources = {"src/dbd/mysql.c"}, libraries = {"mysqlclient"}, incdirs = {"$(LIBMYSQL_INCDIR)/mysql"}, libdirs = {"$(LIBMYSQL_LIBDIR)"} }
    }
 }
