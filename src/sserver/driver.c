@@ -19,7 +19,7 @@ typedef struct { int fd; int recurring; } countdown_t;
 
 int imin(int a, int b) { return a < b ? a : b; }
 
-#define lua_newobject(L, name) lua_newuserdata(L, sizeof(name##_t)); luaL_setmetatable(L, #name);
+#define lua_newobject(L, name) lua_newuserdata(L, sizeof(name##_t)); luaL_setmetatable(L, "sserver." #name);
 
 static char base64_encode[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 static int f_base64_decode(lua_State* L) {
@@ -243,7 +243,7 @@ static int f_loop_new(lua_State* L) {
 	int epollfd = epoll_create1(0);
 	lua_pushinteger(L, epollfd); lua_setfield(L, -2, "epollfd");
 	lua_newtable(L); lua_setfield(L, -2, "fds");
-	luaL_setmetatable(L, "loop");
+	luaL_setmetatable(L, "sserver.loop");
   return 1;
 }
 
@@ -354,7 +354,7 @@ static int f_countdown_new(lua_State* L) {
 }
 
 static int f_countdown_gc(lua_State* L) {
-  countdown_t* countdown = luaL_checkudata(L, 1, "socket");
+  countdown_t* countdown = luaL_checkudata(L, 1, "sserver.socket");
   if (countdown->fd)
 		close(countdown->fd);
 }
@@ -385,21 +385,21 @@ static int f_socket_bind(lua_State *L) {
 static int f_socket_accept(lua_State* L) {
   struct sockaddr_in peer_addr = {0};
   socklen_t peer_addr_len = sizeof(peer_addr);
-  socket_t* sock = luaL_checkudata(L, 1, "socket");
+  socket_t* sock = luaL_checkudata(L, 1, "sserver.socket");
   int fd = accept(sock->fd, (struct sockaddr*)&peer_addr, &peer_addr_len);
   int flags = fcntl(fd, F_GETFL, 0);
 	if (flags == -1 || fcntl(fd, F_SETFL, (flags | O_NONBLOCK)) == -1) 
 		return luaL_error(L, "error setting non-blocking: %s", strerror(errno));
   socket_t* peer = lua_newuserdata(L, sizeof(socket_t));
   peer->fd = fd;
-  luaL_setmetatable(L, "socket");
+  luaL_setmetatable(L, "sserver.socket");
   return 1;
 }
 
 static int f_socket_peer(lua_State* L) {
   struct sockaddr_in peer_addr = {0};
   socklen_t peer_addr_len = sizeof(peer_addr);
-  socket_t* sock = luaL_checkudata(L, 1, "socket");
+  socket_t* sock = luaL_checkudata(L, 1, "sserver.socket");
   getsockname(sock->fd, (struct sockaddr*)&peer_addr, &peer_addr_len);
   char str[INET_ADDRSTRLEN+1] = {0};
   lua_pushstring(L, inet_ntoa(peer_addr.sin_addr));
@@ -408,7 +408,7 @@ static int f_socket_peer(lua_State* L) {
 }
 
 static int f_socket_close(lua_State* L) {
-  socket_t* sock = luaL_checkudata(L, 1, "socket");
+  socket_t* sock = luaL_checkudata(L, 1, "sserver.socket");
   if (sock->fd) {
     close(sock->fd);
     sock->fd = 0;
@@ -417,7 +417,7 @@ static int f_socket_close(lua_State* L) {
 }
 
 static int f_socket_recv(lua_State* L) {
-  socket_t* sock = luaL_checkudata(L, 1, "socket");
+  socket_t* sock = luaL_checkudata(L, 1, "sserver.socket");
   int bytes = luaL_checkinteger(L, 2), length = 0, total_received = 0;
   luaL_Buffer buffer;
   char chunk[4096];
@@ -440,7 +440,7 @@ static int f_socket_recv(lua_State* L) {
 }
 
 static int f_socket_send(lua_State* L) {
-  socket_t* sock = luaL_checkudata(L, 1, "socket");
+  socket_t* sock = luaL_checkudata(L, 1, "sserver.socket");
   size_t packet_length;
   const char* packet = luaL_checklstring(L, 2, &packet_length);
   int res = send(sock->fd, packet, packet_length, 0);
@@ -467,7 +467,7 @@ static const luaL_Reg socket_lib[] = {
   { NULL,        NULL }
 };
 
-#define luaL_newclass(L, name) lua_pushliteral(L, #name); lua_newtable(L); luaL_setfuncs(L, name##_lib, 0); lua_pushvalue(L, -1); lua_setfield(L, -2, "__index"); lua_setfield(L, -2, #name); lua_pushliteral(L, #name); lua_setfield(L, -2, "__name"); lua_rawset(L, -3);
+#define luaL_newclass(L, name) lua_pushliteral(L, #name); luaL_newmetatable(L, "sserver." #name); luaL_setfuncs(L, name##_lib, 0); lua_pushvalue(L, -1); lua_setfield(L, -2, "__index"); lua_rawset(L, -3);
 
 int luaopen_sserver_driver(lua_State* L) {
 	lua_newtable(L);

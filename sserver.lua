@@ -1,5 +1,5 @@
 -- We go for simplicity above all else.
-local driver = require "server.driver"
+local driver = require "sserver.driver"
 local socket, loop, sha1, base64 = driver.socket, driver.loop, driver.sha1, driver.base64
 local PACKET_SIZE = 4096
 
