@@ -45,7 +45,7 @@ server = Server.new({
   timeout = args.timeout or 10,
   verbose = args.verbose,
   handler = function(request)
-    local db = get_db()
+    local db <close> = get_db()
     if request.method == "GET" then
       if request.path == "/" then
         request.client:file("static/client.html")
@@ -95,13 +95,13 @@ this repository into your project, and then simply symlinking the relevant sourc
 directory, and using the following build script and `main.c`:
 
 ```bash
-: ${CC=gcc}
+: ${CC=musl-gcc}
 : ${CFLAGS=-O3 -s}
 : ${BIN=server}
 [[ "$@" == "clean" ]] && rm -rf packed.c lua $BIN && exit 0
 [[ ! -e "packed.c" && ! -e "lua" ]] && $CC lib/lua/onelua.c -o lua -lm
-[[ ! -e "packed.c" ]] && scripts/pack.lua *.lua > packed.c
-$CC -DMAKE_LIB=1 -Ilib/lua lib/lua/onelua.c *.c -lm -lmysqlclient -o $BIN $@
+[[ ! -e "packed.c" ]] && ./lua lib/lua-dbix/scripts/pack.lua *.lua > packed.c
+$CC -DMAKE_LIB=1 -Ilib/lua lib/lua/onelua.c *.c -lm -o $BIN -static  $@
 ```
 
 ```c
@@ -116,17 +116,14 @@ $CC -DMAKE_LIB=1 -Ilib/lua lib/lua/onelua.c *.c -lm -lmysqlclient -o $BIN $@
 #endif
 
 int luaopen_sserver_driver(lua_State* L);
-int luaopen_dbix_dbd_mysql(lua_State* L);
 
 int main(int argc, char* argv[]) {
   lua_State* L = luaL_newstate();
   luaL_openlibs(L);
-  lua_getfield(L, LUA_GLOBALSINDEX, "package");
+  lua_getglobal(L, "package");
   lua_getfield(L, -1, "preload");
-  luaopen_sserver_driver(L);
+  lua_pushcfunction(L, luaopen_sserver_driver);
   lua_setfield(L, -2, "sserver.driver");
-  luaopen_dbix_dbd_mysql(L);
-  lua_setfield(L, -2, "dbix.dbd.mysql");
 	for (int i = 0; packed_luac[i]; i += 3) {
 		if (luaL_loadbuffer(L, packed_luac[i+1], (size_t)packed_luac[i+2], packed_luac[i])) {
 			fprintf(stderr, "Error loading %s: %s", packed_luac[i], lua_tostring(L, -1));
@@ -144,5 +141,38 @@ int main(int argc, char* argv[]) {
   return 0;
 }
 ```
+
+All in all, this packed binary can be statically linked, and copied into almost any linux environment,
+including an [Alpine](https://alpinelinux.org/) linux container.
+
+```dockerfile
+FROM alpine:latest
+
+COPY static .
+COPY server .
+CMD ["./server", "--port=80"]
+```
+
+This allows for *extremely* small alpine containers that are pretty quick and very low memory.
+
+A basic container application that uses this webserver takes up `9.46MB`, and approximately `1.078MiB`
+of RAM at rest.
+
+For portability reasons, you can simply build inside the conatiner if you want:
+
+```dockerfile
+FROM alpine:latest
+
+RUN apk add gcc musl-dev
+COPY lib lib
+COPY static static
+COPY *.lua *.c build.sh .
+RUN gcc -DMAKE_LIB=1 -Ilib/lua lib/lua/onelua.c *.c -lm -O3 -s -o dawoot
+RUN apk del gcc musl-dev
+CMD ["./dawoot", "--port=80"]
+```
+
+Although this will grealty increase the size of the container to about `167MB`, so if you are on a limited
+server, you may wish to compile locally.
 
 
