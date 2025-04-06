@@ -110,9 +110,9 @@ $CC -DMAKE_LIB=1 -Ilib/lua lib/lua/onelua.c *.c -lm -o $BIN -static  $@
 #include <lauxlib.h>
 
 #ifdef PACKED_LUA
-	extern const char* packed_luac[];
+  extern const char* packed_luac[];
 #else
-	static const char* packed_luac[] = { NULL, NULL, NULL };
+  static const char* packed_luac[] = { NULL, NULL, NULL };
 #endif
 
 int luaopen_sserver_driver(lua_State* L);
@@ -124,19 +124,19 @@ int main(int argc, char* argv[]) {
   lua_getfield(L, -1, "preload");
   lua_pushcfunction(L, luaopen_sserver_driver);
   lua_setfield(L, -2, "sserver.driver");
-	for (int i = 0; packed_luac[i]; i += 3) {
-		if (luaL_loadbuffer(L, packed_luac[i+1], (size_t)packed_luac[i+2], packed_luac[i])) {
-			fprintf(stderr, "Error loading %s: %s", packed_luac[i], lua_tostring(L, -1));
-			return -1;
-		}
-		lua_setfield(L, -2, packed_luac[i]);
-	}
-	lua_pop(L, 1);
-	luaL_loadstring(L, "(package.preload.init or loadfile(\"init.lua\"))(...)");
-	for (int i = 1; i < argc; ++i) 
-		lua_pushstring(L, argv[i]);
+  for (int i = 0; packed_luac[i]; i += 3) {
+    if (luaL_loadbuffer(L, packed_luac[i+1], (size_t)packed_luac[i+2], packed_luac[i])) {
+      fprintf(stderr, "Error loading %s: %s", packed_luac[i], lua_tostring(L, -1));
+      return -1;
+    }
+    lua_setfield(L, -2, packed_luac[i]);
+  }
+  lua_pop(L, 1);
+  luaL_loadstring(L, "(package.preload.init or loadfile(\"init.lua\"))(...)");
+  for (int i = 1; i < argc; ++i) 
+    lua_pushstring(L, argv[i]);
   if (lua_pcall(L, argc - 1, LUA_MULTRET, 0))
-		fprintf(stderr, "error initializing server: %s\n", lua_tostring(L, -1));
+    fprintf(stderr, "error initializing server: %s\n", lua_tostring(L, -1));
   lua_close(L);
   return 0;
 }
