@@ -3,8 +3,9 @@ local driver = require "sserver.driver"
 local socket, loop, sha1, base64 = driver.socket, driver.loop, driver.sha1, driver.base64
 local PACKET_SIZE = 4096
 
-local Server = {}
+local Server = { Loop = driver.loop, Socket = driver.socket, sha1 = driver.sha1, base64 = driver.base64 }
 Server.__index = Server
+
 
 Server.Websocket = { op = { CONT = 0x0, TEXT = 0x1, BINARY = 0x2, CLOSE = 0x8, PING = 0x9, PONG = 0xA } }
 Server.Websocket.__index = Server.Websocket
@@ -83,9 +84,10 @@ function Response:write(client)
 end
 
 local Request = { }
+Server.Request = Request
 Request.__index = Request
 function Request.new(client) 
-  return setmetatable({ method = nil, client = client, path = nil, version = nil, headers = {}, buffer = {} }, Request) 
+  return setmetatable({ method = nil, client = client, path = nil, version = nil, headers = {}, buffer = {}, cookies = {}, responded = false, length_read = 0 }, Request) 
 end
 function Request:parse_headers()
   while #self.buffer == 0 or not self.buffer[#self.buffer]:find("\r\n\r\n") do
@@ -98,10 +100,13 @@ function Request:parse_headers()
   end
   local headers, remainder
   self.method, self.path, self.version, headers, remainder = table.concat(self.buffer):match("^(%S+) (%S+) (%S+)\r\n(.-\r\n)\r\n(.*)$")
-  self.path, self.search = self.path:match("^([^?]+)(%??[^?]*)$")
+  self.params, self.path, self.search = {}, self.path:match("^([^?]+)(%??[^?]*)$")
   assert(self.method and self.path, "malformed request")
+  if self.search then for key,value in self.search:gmatch("([^=]+)=([^&]+)") do self.params[key] = value:gsub("%%([a-fA-F0-9][a-fA-F0-9])", function(e) return string.char(tonumber(e, 16)) end) end end
   for key,value in headers:gmatch("([^%:]+):%s*(.-)\r\n") do self.headers[key:lower()] = value end
+  for key,value in (self.headers.cookie or ""):gmatch("([^=]+)=([^;]+)") do self.cookies[key] = value:gsub("%%([a-fA-F0-9][a-fA-F0-9])", function(e) return string.char(tonumber(e, 16)) end) end
   if #remainder > 0 then self.client.buffer = remainder end
+  assert(self.method == "GET" or self.headers['content-length'], "malformed request, requires content-length")
   self.client.server.log:verbose("REQ %s %s %s", self.method, self.path, self.client.socket:peer())
   return self
 end
@@ -109,7 +114,20 @@ function Request:websocket()
   self.client.websocket = Server.Websocket.new(self.client):handshake(self)
   return self.client.websocket
 end
-function Request:respond(...) return self.client:respond(...) end
+function Request:body() if self.method == "GET" or self._body then return self._body end self._body = self:read(self.headers['content-length'] - self.length_read) return self._body end
+function Request:read(len) local str = self.client:read(len) self.length_read = self.length_read + #str return str end
+function Request:respond(code, headers, body) 
+  self.responded = true 
+  if not headers['set-cookie'] and self.cookies then 
+    local cookies = {}
+    for key,value in pairs(self.cookies) do table.insert(cookies, key .. "=" .. tostring(value):gsub("[%c:/?#%[%]@!$&'\"%(%)*+,;=%%]", function(e) return "%" .. string.format("%02x", e) end)) end
+    if #cookies > 0 then headers['set-cookie'] = table.concat(cookies, ';') end
+  end
+  Response.new(code, headers, body):write(self.client) 
+  return self 
+end
+function Request:redirect(path) return self:respond(302, { ["location"] = path }) end
+function Request:file(path) return self:respond(200, { ['content-type'] = self.client.server:mimetype(path) }, assert(io.open(path, "rb"), { code = 404 }):read("*all")) end
 
 local Client = {}
 Client.__index = Client
@@ -131,7 +149,7 @@ function Client:read(len)
     local packet, err = self.socket:recv(len) 
     if packet and #packet > 0 then return packet end
     if err == "timeout" then
-      coroutine.yield({ socket = self.socket })
+      self:yield()
     elseif err == "closed" then
       self.closed = true
     else
@@ -140,10 +158,7 @@ function Client:read(len)
   end
 end
 function Client:close() self.server.log:verbose("Manually closing connnection.") self.socket:close() self.closed = true end
-function Client:yield() coroutine.yield({ socket = self.socket }) end
-function Client:respond(code, headers, body) self.responded = true Response.new(code, headers, body):write(self) return self end
-function Client:redirect(path) return self:respond(302, { ["location"] = path }) end
-function Client:file(path) return self:respond(200, { ['content-type'] = self.server:mimetype(path) }, assert(io.open(path, "rb"), { code = 404 }):read("*all")) end
+function Client:yield() coroutine.yield({ socket = self.socket, edge = true }) end
 function Client:process()
   while coroutine.status(self.co) ~= "dead" do
     local status, result = coroutine.resume(self.co)
@@ -153,17 +168,21 @@ function Client:process()
         self.waiting = nil 
       end
       if not self.waiting and (result.socket or result.waiting) then
-        self.waiting = self.server.loop:add(result.socket or timer.new(result.timeout), function() self:process() end)
+        self.waiting = self.server.loop:add(result.socket or timer.new(result.timeout), function() self:process() end, result.edge)
       end
       break
     end
+  end
+  if self.waiting then
+    self.server.loop:rm(self.waiting)
   end
 end
 
 function Server.new(t) 
   t.socket = assert(socket.bind(t.host or "0.0.0.0", t.port or 80), "unable to bind")
-  t.mimes = { ["jpeg"] = "image/jpeg", ["gif"] = "image/gif", ["js"] = "text/javascript", ["html"] = "text/html", ["css"] = "text/css", ["txt"] = "text/plain" }
-  t.codes = { [101] = "Switching Protocols", [200] = "OK", [204] = "No Content", [302] = "Found", [400] = "Bad Request", [404] = "Not Found", [500] = "Internal Server Error" }
+  t.mimes = { ["jpeg"] = "image/jpeg", ["jpg"] = "image/jpeg", ["png"] = "image/png", ["gif"] = "image/gif", ["js"] = "text/javascript", ["html"] = "text/html", ["css"] = "text/css", ["txt"] = "text/plain" }
+  t.codes = { [101] = "Switching Protocols", [200] = "OK", [201] = "Created", [204] = "No Content", [301] = "Moved Permanently", [302] = "Found", [400] = "Bad Request", [403] = "Forbidden", [404] = "Not Found", [500] = "Internal Server Error" }
+  t.routes = { GET = { }, POST = { }, PUT = { }, DELETE = { } }
   local self = setmetatable(t, Server) 
   self.log._verbose = t.verbose
   self.log:info("Server up on %s:%s", self.socket:peer())
@@ -177,21 +196,25 @@ function Server:accept()
     self.log:verbose("Incoming connection from '%s'", socket:peer())
     client.co = coroutine.create(function() 
       while not client.closed do
+        local request
         xpcall(function()
-          self:accepted(client)
-          if not client.responded then error({ code = 404 }) end
+          request = Request.new(client):parse_headers()
+          self:accepted(client, request)
+          if not request.responded then error({ code = 404 }) end
         end, function(err)
           if type(err) == 'table' and err.code and type(err.code) == "number" then
             local msg = string.format("%d Error", err.code)
             if err.message then msg = msg .. ": " .. err.message end
             if self.verbose or not err.verbose then self.log:error(msg) end
-            if not client.responded then client:respond(err.code, { ["Content-Type"] = "text/plain; charset=UTF-8" }, err.code .. " " .. self.codes[err.code] .. " ") end
+            if not request.responded then request:respond(err.code, { ["Content-Type"] = "text/plain; charset=UTF-8" }, err.code .. " " .. self.codes[err.code] .. "\n") end
           else
             local msg = string.format("Unhandled Error: %s", err) 
             if self.verbose then self.log:error(debug.traceback(msg, 3)) else self.log:error(msg) end
-            if not client.responded then client:respond(500, { ["Content-Type"] = "text/plain; charset=UTF-8" }, "500 Internal Server Error") end
+            if not request.responded then request:respond(500, { ["Content-Type"] = "text/plain; charset=UTF-8" }, "500 Internal Server Error") end
           end
         end)
+        -- clear out buffer if it wasn't read
+        request:body()
       end
     end)
     return client
@@ -207,14 +230,28 @@ function Server:add(loop)
   return self
 end
 function Server:stop(loop) self.loop:remove(self.socket) end
-function Server:accepted(client)
-  client.responded = false
-  self.handler(Request.new(client):parse_headers())
+function Server:accepted(client, request)
+  (self.handler or self.default_handler)(self, request)
 end
 function Server:mimetype(file)
   local extension = file:match("%.(%w+)$")
   return extension and self.mimes[extension] or "text/plain"
 end
+
+function Server:default_handler(request)
+  for i, route in pairs(self.routes[request.method] or {}) do
+    local results = { request.path:match(route.path) }
+    if results and #results > 0 then
+      for i,v in ipairs(results) do if v == "" then results[i] = false end end
+      return route.handler(request, table.unpack(results))
+    end
+  end
+end
+function Server:route(method, path, func) table.insert(self.routes[method], { path = "^" .. path .. "$", handler = func }) table.sort(self.routes[method], function(a,b) return #a.path > #b.path end) end
+function Server:get(path, func) return self:route("GET", path, func) end
+function Server:post(path, func) return self:route("POST", path, func) end
+function Server:put(path, func) return self:route("PUT", path, func) end
+function Server:delete(path, func) return self:route("DELETE", path, func) end
 
 Server.log = {}
 function Server.log:log(type, message, ...) io.stdout:write(string.format("[%5s][%s]: " .. message .. "\n", type, os.date("%Y-%m-%dT%H:%M:%S"), ...)):flush() end

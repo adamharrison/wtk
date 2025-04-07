@@ -260,7 +260,10 @@ static int lua_tofd(lua_State* L, int index) {
 static int f_loop_add(lua_State* L) {
 	lua_getfield(L, 1, "epollfd");
 	int fd = lua_tofd(L, 2);
-	struct epoll_event event = { .events = EPOLLIN | EPOLLRDHUP | EPOLLERR | EPOLLHUP | EPOLLET, .data = { .fd = fd } };
+	int mask = EPOLLIN | EPOLLRDHUP | EPOLLERR | EPOLLHUP;
+	if (lua_isboolean(L, 4))
+		mask |= EPOLLET;
+	struct epoll_event event = { .events = EPOLLIN | EPOLLRDHUP | EPOLLERR | EPOLLHUP, .data = { .fd = fd } };
 	epoll_ctl(luaL_checkinteger(L, -1), EPOLL_CTL_ADD, fd, &event);
 	luaL_getsubtable(L, 1, "fds");
 	lua_pushinteger(L, fd); 
@@ -271,7 +274,7 @@ static int f_loop_add(lua_State* L) {
 	lua_pushvalue(L, 2);
 	lua_rawseti(L, -2, 2);
 	lua_rawset(L, -3);
-	lua_pop(L, 1);
+	lua_pushvalue(L, 2);
   return 1;
 }
 

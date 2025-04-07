@@ -1,8 +1,8 @@
 local dbix = {}
 
-local schema, stable, resultset, result, connection, cschema, raw = {}, {}, {}, {}, {}, {}, {}
+local schema, stable, resultset, result, connection, cschema, raw, NULL = {}, {}, {}, {}, {}, {}, {}
 
-local function grep(arr, func) local t = {} for i,v in ipairs(arr) do if func(v,i) then table.insert(t,v) end return t end end
+local function grep(arr, func) local t = {} for i,v in ipairs(arr) do if func(v,i) then table.insert(t,v) end end return t  end
 local function map(arr, func) local t = {} for i,v in ipairs(arr) do t[i] = func(v, i) end return t end
 local function merge(a,b) local t = {} for k,v in pairs(a) do t[k] = v end for k,v in pairs(b) do t[k] = v end return t end
 local function group_by(a, func)
@@ -26,17 +26,21 @@ resultset.__index = resultset
 dbix.raw = function(str)
   return setmetatable({ str }, raw)
 end
+dbix.null = function(str)
+  return setmetatable({ }, NULL)
+end
 
 function cschema.new(connection, schema)
   local self = setmetatable({ }, cschema)
   self._connection = connection
   self._schema = schema
   self._c = connection._c
+  for i,v in ipairs(schema.tables) do
+    self[v.name] = resultset.new(self, v)
+  end
   return self
 end
-function cschema:__index(key) 
-  return rawget(cschema, key) or connection[key] or resultset.new(self, first(assert(self._schema:table(key), "unknown table " .. key))) 
-end
+function cschema:__index(key) return rawget(cschema, key) or connection[key] end
 
 function cschema:query(str)
   local statement, err = self._connection:query(str)
@@ -88,6 +92,7 @@ function connection:close() return self._c:close() end
 function connection:escape(...) 
   return table.concat(map({ ... }, function(e) 
     if getmetatable(e) == raw then return e[1] end
+    if getmetatable(e) == NULL then return "NULL" end
     return self._c:escape(e) 
   end), '.') 
 end
@@ -123,6 +128,8 @@ function connection:translate_value(value)
   elseif type(value) == 'table' then
     if getmetatable(value) == raw then 
       return value[1] 
+    elseif getmetatable(value) == NULL then 
+      return 'NULL'
     end
   end
   return ''
@@ -183,6 +190,9 @@ function resultset.new(connection, t, cached)
   if getmetatable(connection) == resultset then
     local rs = setmetatable({ }, resultset)
     for k,v in pairs(connection) do rs[k] = v end
+    rs._where = { table.unpack(connection._where) }
+    rs._having = { table.unpack(connection._having) }
+    rs._prefetch = { table.unpack(connection._prefetch) }
     return rs
   end
   return setmetatable({
@@ -264,6 +274,7 @@ local function each_multirow_iteration(a, i)
         primary_key = result_primary_key
       end
     else
+      a.last_result = nil
       break
     end
   end
@@ -332,6 +343,7 @@ function resultset:each()
   end
 end
 function resultset:all() local t = {} for row in self:each() do table.insert(t, row) end return t end
+function resultset:find(conditions) return self:where(conditions):first() end
 function resultset:first() 
   if self._variable_row_count then 
     for row in self:each() do 
@@ -339,6 +351,21 @@ function resultset:first()
     end 
   end 
   return self:rows(1):all()[1] 
+end
+function resultset:take(num)
+  if self._variable_row_count then 
+    local t = {}
+    local i = 0
+    for row in self:each() do 
+      table.insert(t, row) 
+      i = i + 1
+      if i >= num then
+        break
+      end
+    end 
+    return t
+  end 
+  return self:rows(num):all()
 end
 function resultset:count() 
   local query = self._connection:query(self:as_sql(true))

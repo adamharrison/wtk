@@ -123,6 +123,8 @@ static int f_mysql_result_close(lua_State* L) {
 
 static int f_mysql_result_fetchk(lua_State* L, int state, lua_KContext ctx) {
   mysql_result_t* mysql_result = lua_tomysql_result(L, 1);
+  if (!mysql_result->result)
+    return 0;
   mysql_result_fetch_status_e status = ctx;
   switch (status) {
     case MYSQL_RESULT_FETCH_STATUS_FETCHING: {
@@ -261,7 +263,10 @@ static int f_mysql_escape(lua_State* L) {
 
 static int f_mysql_close(lua_State* L) {
   mysql_t* mysql = lua_tomysql(L, 1);
-  mysql_close(mysql->db);
+  if (mysql->db) {
+    mysql_close(mysql->db);
+    mysql->db = NULL;
+  }
   return 0;
 }
 
