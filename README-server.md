@@ -25,7 +25,7 @@ This will build the drivers as well as the module; you don't need all of these,
 only really just one.
 
 ```lua
-local Server = require "sserver"
+local Server = require "wtk.server"
 local Loop = Server.Loop
 local Countdown = Server.Countdown
 

@@ -472,7 +472,7 @@ static const luaL_Reg socket_lib[] = {
 
 #define luaL_newclass(L, name) lua_pushliteral(L, #name); luaL_newmetatable(L, "sserver." #name); luaL_setfuncs(L, name##_lib, 0); lua_pushvalue(L, -1); lua_setfield(L, -2, "__index"); lua_rawset(L, -3);
 
-int luaopen_sserver_driver(lua_State* L) {
+int luaopen_wtk_server_driver(lua_State* L) {
 	lua_newtable(L);
   luaL_newclass(L, socket);
   luaL_newclass(L, countdown);

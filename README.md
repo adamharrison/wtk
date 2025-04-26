@@ -7,8 +7,8 @@ These are a bunch of non-blocking modules that can be easily packaged into a sin
 Here's an example of a non-blocking webserver server with a database connection.
 
 ```lua
-local DBIX = require "dbix"
-local Server = require "sserver"
+local DBIX = require "wtk.dbix"
+local Server = require "wtk.server"
 local Loop = Server.Loop
 local Countdown = Server.Countdown
 local loop = Loop.new()
@@ -115,15 +115,15 @@ $CC -DMAKE_LIB=1 -Ilib/lua lib/lua/onelua.c *.c -lm -o $BIN -static  $@
   static const char* packed_luac[] = { NULL, NULL, NULL };
 #endif
 
-int luaopen_sserver_driver(lua_State* L);
+int luaopen_wtk_server_driver(lua_State* L);
 
 int main(int argc, char* argv[]) {
   lua_State* L = luaL_newstate();
   luaL_openlibs(L);
   lua_getglobal(L, "package");
   lua_getfield(L, -1, "preload");
-  lua_pushcfunction(L, luaopen_sserver_driver);
-  lua_setfield(L, -2, "sserver.driver");
+  lua_pushcfunction(L, luaopen_wtk_server_driver);
+  lua_setfield(L, -2, "wtk.server.driver");
   for (int i = 0; packed_luac[i]; i += 3) {
     if (luaL_loadbuffer(L, packed_luac[i+1], (size_t)packed_luac[i+2], packed_luac[i])) {
       fprintf(stderr, "Error loading %s: %s", packed_luac[i], lua_tostring(L, -1));

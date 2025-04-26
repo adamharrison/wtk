@@ -1,4 +1,4 @@
-package = "sserver"
+package = "wtk.server"
 version = "1.0-1"
 description = {
    summary = "A simple non-blocking webserver.",
@@ -11,12 +11,12 @@ dependencies = {
    "lua >= 5.1"
 }
 source = {
-   url = "git://github.com/adamharrison/lua-dbix.git"
+   url = "git://github.com/adamharrison/wtk.git"
 }
 build = {
    type = "builtin",
    modules = {
-      sserver = "sserver.lua",
-      ["sserver.driver"] = { sources = {"src/sserver/driver.c"} }
+      ["wtk.server"] = "server.lua",
+      ["wtk.server.driver"] = { sources = {"src/server/driver.c"} }
    }
 }

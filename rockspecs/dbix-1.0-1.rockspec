@@ -1,4 +1,4 @@
-package = "dbix"
+package = "wtk.dbix"
 version = "1.0-1"
 description = {
    summary = "An alternate dbi module, inspired by perl's DBIx::Class.",
@@ -11,11 +11,11 @@ dependencies = {
    "lua >= 5.1"
 }
 source = {
-   url = "git://github.com/adamharrison/lua-dbix.git"
+   url = "git://github.com/adamharrison/wtk.git"
 }
 build = {
    type = "builtin",
    modules = {
-      dbix = "dbix.lua"
+      { ["wtk.dbix"] = "dbix.lua" }
    }
 }
