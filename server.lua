@@ -127,7 +127,52 @@ function Request:respond(code, headers, body)
   return self 
 end
 function Request:redirect(path) return self:respond(302, { ["location"] = path }) end
-function Request:file(path) return self:respond(200, { ['content-type'] = self.client.server:mimetype(path) }, assert(io.open(path, "rb"), { code = 404 }):read("*all")) end
+function Request:file(path) assert(not path:find("%.%."), "invalid path") return self:respond(200, { ['content-type'] = self.client.server:mimetype(path) }, assert(io.open(path, "rb"), { code = 404 }):read("*all")) end
+function Request:parts()
+  local boundary = self.headers['content-type']:match("multipart/form-data;%s+boundary=(.+)$")
+  if not boundary then return function() return nil end end
+  local content_length = assert(self.headers['content-length'], { code = 400, message = "requries a content-length" })
+  local chunk = ""
+  return function()
+    while true do
+      chunk = chunk .. self:read(math.min(content_length - self.length_read, 4096))
+      local s, e = chunk:find("\r\n\r\n")
+      if s then 
+        local header_text = chunk:sub(1, s - 1)
+        local remainder = chunk:sub(e + 1)
+        local bs, be = remainder:find(boundary)
+        local finished = false
+        if bs then 
+          remainder = remainder:sub(1, bs - 1) 
+          chunk = remainder:sub(be + 1)
+          finished = true
+        end
+        local headers = {}
+        for key,value in header_text:gmatch("([^%:]+):%s*(.-)\r\n") do headers[key:lower()] = value end
+        return {
+          buffer = remainder,
+          finished = finished,
+          headers = headers,
+          read = function(file, length) 
+            if file.finished then return nil end
+            file.buffer = file.buffer .. self:read(4096)
+            local bs, be = file.buffer:find(boundary)
+            if not bs then
+              local internal = file.buffer:sub(1, #file.buffer - #boundary)
+              file.buffer = file.buffer:sub(#file.buffer - #boundary + 1)
+              return internal
+            else
+              file.finished = true
+              local internal = file.buffer:sub(1, bs - 1)
+              chunk = file.buffer:find(be + 1)
+              return internal
+            end
+          end
+        }
+      end
+    end
+  end
+end
 
 local Client = {}
 Client.__index = Client

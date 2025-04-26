@@ -26,13 +26,8 @@ only really just one.
 
 ```lua
 local Server = require "wtk.server"
-local Loop = Server.Loop
-local Countdown = Server.Countdown
-
-
-local loop = Loop.new()
-
-local args = Server.pargs({ ... }, { host = "string", port = "integer", verbose = "flag", timeout = "integer",  })
+local loop = Server.Loop.new()
+local args = Server.pargs({ ... }, { host = "string", port = "integer", verbose = "flag", timeout = "integer"  })
 server = Server.new({ 
   host = args.host or "0.0.0.0", 
   port = args.port or 9090, 
@@ -61,18 +56,11 @@ server = Server.new({
 -- give a basic console
 loop:add(0, function()
   local line = io.stdin:read("*line")
-  if line then
-    if line == "quit" then os.exit(0) end
-    local f, err = load(line, "=CLI")
-    if f then
-      _, err = pcall(f)
-    end
-    if err then
-      server.log:error(err)
-    end
-  else
-    return false
-  end
+  if not line then return false end
+  if line == "quit" then os.exit(0) end
+  local f, err = load(line, "=CLI")
+  if f then _, err = pcall(f) end
+  if err then server.log:error(err) end
 end)
 loop:run()
 ```
