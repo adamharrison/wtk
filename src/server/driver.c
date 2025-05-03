@@ -9,17 +9,18 @@
 #include <arpa/inet.h>
 #include <sys/epoll.h>
 #include <sys/timerfd.h>
+#include <sys/stat.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 
 
 typedef struct { int fd; } generic_fd_t;
 typedef struct { int fd; } socket_t;
-typedef struct { int fd; int recurring; } countdown_t;
+typedef struct { int fd; double recurring; } countdown_t;
 
 int imin(int a, int b) { return a < b ? a : b; }
 
-#define lua_newobject(L, name) lua_newuserdata(L, sizeof(name##_t)); luaL_setmetatable(L, "sserver." #name);
+#define lua_newobject(L, name) lua_newuserdata(L, sizeof(name##_t)); luaL_setmetatable(L, "wtk.server." #name);
 
 static char base64_encode[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 static int f_base64_decode(lua_State* L) {
@@ -243,7 +244,7 @@ static int f_loop_new(lua_State* L) {
 	int epollfd = epoll_create1(0);
 	lua_pushinteger(L, epollfd); lua_setfield(L, -2, "epollfd");
 	lua_newtable(L); lua_setfield(L, -2, "fds");
-	luaL_setmetatable(L, "sserver.loop");
+	luaL_setmetatable(L, "wtk.server.loop");
   return 1;
 }
 
@@ -301,7 +302,7 @@ static int f_loop_run(lua_State* L) {
 			lua_pushinteger(L, events[n].data.fd);
 			lua_rawget(L, -2);
 			lua_rawgeti(L, -1, 2);
-			countdown_t* countdown = luaL_testudata(L, -1, "countdown");
+			countdown_t* countdown = luaL_testudata(L, -1, "wtk.server.countdown");
 			if (countdown) {
 				long long length;
 				read(countdown->fd, &length, sizeof(length));
@@ -338,26 +339,43 @@ static const luaL_Reg loop_lib[] = {
   { NULL,       NULL }
 };
 
+
+static int f_system_mtime(lua_State* L) {
+	struct stat file;
+	if (stat(luaL_checkstring(L, 1), &file)) {
+		lua_pushnil(L);
+		lua_pushstring(L, strerror(errno));
+		return 2;
+	}
+	lua_pushnumber(L, file.st_mtime);
+  return 1;
+}
+
+static const luaL_Reg system_lib[] = {
+  { "mtime",    f_system_mtime  },
+  { NULL,       NULL }
+};
+
 static int f_countdown_new(lua_State* L) {
 	countdown_t* countdown = lua_newobject(L, countdown);
 	countdown->fd = timerfd_create(CLOCK_MONOTONIC, 0);
-	int offset = luaL_checkinteger(L, 1);
-	countdown->recurring = luaL_optinteger(L, 2, 0);
-	struct timespec now;
-	struct itimerspec  new_value;
+	double offset = luaL_checknumber(L, 1);
+	countdown->recurring = luaL_optnumber(L, 2, 0);
+	struct timespec now = {0};
+	struct itimerspec new_value = {0};
 	if (clock_gettime(CLOCK_MONOTONIC, &now) == -1)
 		return luaL_error(L, "can't get time: %s", strerror(errno));
-	new_value.it_value.tv_sec = now.tv_sec + offset;
-	new_value.it_value.tv_nsec = now.tv_nsec;
-	new_value.it_interval.tv_sec = countdown->recurring;
-	new_value.it_interval.tv_nsec = 0;
+	new_value.it_value.tv_sec = now.tv_sec + (int)offset;
+	new_value.it_value.tv_nsec = now.tv_nsec + (int)(fmod(offset, 1.0) * (1000000000.0));
+	new_value.it_interval.tv_sec = (int)countdown->recurring;
+	new_value.it_interval.tv_nsec = (int)(fmod(countdown->recurring, 1.0) * (1000000000.0));
 	if (timerfd_settime(countdown->fd, TFD_TIMER_ABSTIME, &new_value, NULL) == -1)
 		return luaL_error(L, "can't set timer: %s", strerror(errno));
   return 1;
 }
 
 static int f_countdown_gc(lua_State* L) {
-  countdown_t* countdown = luaL_checkudata(L, 1, "sserver.socket");
+  countdown_t* countdown = luaL_checkudata(L, 1, "wtk.server.socket");
   if (countdown->fd)
 		close(countdown->fd);
 }
@@ -388,21 +406,21 @@ static int f_socket_bind(lua_State *L) {
 static int f_socket_accept(lua_State* L) {
   struct sockaddr_in peer_addr = {0};
   socklen_t peer_addr_len = sizeof(peer_addr);
-  socket_t* sock = luaL_checkudata(L, 1, "sserver.socket");
+  socket_t* sock = luaL_checkudata(L, 1, "wtk.server.socket");
   int fd = accept(sock->fd, (struct sockaddr*)&peer_addr, &peer_addr_len);
   int flags = fcntl(fd, F_GETFL, 0);
 	if (flags == -1 || fcntl(fd, F_SETFL, (flags | O_NONBLOCK)) == -1) 
 		return luaL_error(L, "error setting non-blocking: %s", strerror(errno));
   socket_t* peer = lua_newuserdata(L, sizeof(socket_t));
   peer->fd = fd;
-  luaL_setmetatable(L, "sserver.socket");
+  luaL_setmetatable(L, "wtk.server.socket");
   return 1;
 }
 
 static int f_socket_peer(lua_State* L) {
   struct sockaddr_in peer_addr = {0};
   socklen_t peer_addr_len = sizeof(peer_addr);
-  socket_t* sock = luaL_checkudata(L, 1, "sserver.socket");
+  socket_t* sock = luaL_checkudata(L, 1, "wtk.server.socket");
   getsockname(sock->fd, (struct sockaddr*)&peer_addr, &peer_addr_len);
   char str[INET_ADDRSTRLEN+1] = {0};
   lua_pushstring(L, inet_ntoa(peer_addr.sin_addr));
@@ -411,7 +429,7 @@ static int f_socket_peer(lua_State* L) {
 }
 
 static int f_socket_close(lua_State* L) {
-  socket_t* sock = luaL_checkudata(L, 1, "sserver.socket");
+  socket_t* sock = luaL_checkudata(L, 1, "wtk.server.socket");
   if (sock->fd) {
     close(sock->fd);
     sock->fd = 0;
@@ -420,7 +438,7 @@ static int f_socket_close(lua_State* L) {
 }
 
 static int f_socket_recv(lua_State* L) {
-  socket_t* sock = luaL_checkudata(L, 1, "sserver.socket");
+  socket_t* sock = luaL_checkudata(L, 1, "wtk.server.socket");
   int bytes = luaL_checkinteger(L, 2), length = 0, total_received = 0;
   luaL_Buffer buffer;
   char chunk[4096];
@@ -443,7 +461,7 @@ static int f_socket_recv(lua_State* L) {
 }
 
 static int f_socket_send(lua_State* L) {
-  socket_t* sock = luaL_checkudata(L, 1, "sserver.socket");
+  socket_t* sock = luaL_checkudata(L, 1, "wtk.server.socket");
   size_t packet_length;
   const char* packet = luaL_checklstring(L, 2, &packet_length);
   int res = send(sock->fd, packet, packet_length, 0);
@@ -470,10 +488,11 @@ static const luaL_Reg socket_lib[] = {
   { NULL,        NULL }
 };
 
-#define luaL_newclass(L, name) lua_pushliteral(L, #name); luaL_newmetatable(L, "sserver." #name); luaL_setfuncs(L, name##_lib, 0); lua_pushvalue(L, -1); lua_setfield(L, -2, "__index"); lua_rawset(L, -3);
+#define luaL_newclass(L, name) lua_pushliteral(L, #name); luaL_newmetatable(L, "wtk.server." #name); luaL_setfuncs(L, name##_lib, 0); lua_pushvalue(L, -1); lua_setfield(L, -2, "__index"); lua_rawset(L, -3);
 
 int luaopen_wtk_server_driver(lua_State* L) {
 	lua_newtable(L);
+  luaL_newclass(L, system);
   luaL_newclass(L, socket);
   luaL_newclass(L, countdown);
   luaL_newclass(L, loop);

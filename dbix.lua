@@ -1,6 +1,6 @@
 local dbix = {}
 
-local schema, stable, resultset, result, connection, cschema, raw, NULL = {}, {}, {}, {}, {}, {}, {}
+local schema, stable, resultset, result, connection, cschema, raw, blob, NULL = {}, {}, {}, {}, {}, {}, {}, {}, {}
 
 local function grep(arr, func) local t = {} for i,v in ipairs(arr) do if func(v,i) then table.insert(t,v) end end return t  end
 local function map(arr, func) local t = {} for i,v in ipairs(arr) do t[i] = func(v, i) end return t end
@@ -26,8 +26,9 @@ resultset.__index = resultset
 dbix.raw = function(str)
   return setmetatable({ str }, raw)
 end
-dbix.null = function(str)
-  return setmetatable({ }, NULL)
+dbix.null = NULL
+dbix.blob = function(str)
+  return setmetatable({ str }, blob)
 end
 
 function cschema.new(connection, schema)
@@ -42,8 +43,8 @@ function cschema.new(connection, schema)
 end
 function cschema:__index(key) return rawget(cschema, key) or connection[key] end
 
-function cschema:query(str)
-  local statement, err = self._connection:query(str)
+function cschema:query(str, binds)
+  local statement, err = self._connection:query(str, binds)
   if not statement and err then error(err) end
   return statement, err
 end
@@ -70,6 +71,7 @@ function schema:table(t)
   t.schema = self
   if not t.plural then t.plural = t.name end
   if not t.singular then t.singular = t.plural:gsub("s$", "") end
+  for i, column in ipairs(t.columns) do t.columns[column.name] = column end
   t.relationships = {}
   table.insert(self.tables, setmetatable(t, stable))
   return self.tables[#self.tables]
@@ -81,7 +83,7 @@ function stable:has_one(t, name, self_columns, foreign_columns) table.insert(sel
 
 function connection.new(driver, options)
   local self = setmetatable({ }, connection)
-  self._driver = assert(type(driver) == 'string' and require("dbix.dbd." .. driver) or driver, "can't find driver " .. driver)
+  self._driver = assert(type(driver) == 'string' and require("wtk.dbix.dbd." .. driver) or driver, "can't find driver " .. driver)
   self._options = options or {}
   self._log = os.getenv("DBIX_TRACE") and function(self, msg) io.stderr:write(msg, "\n") end or options.log or false
   self._c = assert(self._driver:connect(options))
@@ -97,9 +99,9 @@ function connection:escape(...)
   end), '.') 
 end
 function connection:quote(str) return self._c:quote(str) end
-function connection:query(statement) 
+function connection:query(statement, binds) 
   if self._log then self._log(self, statement) end
-  return self._c:query(statement) 
+  return self._c:query(statement, binds) 
 end 
 -- optional methods
 function connection:type(column) return self._c.type and self._c:type(column) end
@@ -123,12 +125,16 @@ function connection:translate_value(value)
     return self:quote(value)
   elseif type(value) == "nil" then
     return "NULL"
+  elseif type(value) == 'boolean' then
+    return value and 1 or 0
   elseif type(value) == "number" then
     return value
   elseif type(value) == 'table' then
     if getmetatable(value) == raw then 
       return value[1] 
-    elseif getmetatable(value) == NULL then 
+    elseif getmetatable(value) == blob then 
+      return '?' 
+    elseif value == NULL then 
       return 'NULL'
     end
   end
@@ -231,7 +237,7 @@ end
 function resultset:rows(rows) local rs = resultset.new(self) rs._rows = rows return rs end
 function resultset:offset(offset) local rs = resultset.new(self) rs._offset = offset return rs end
 function resultset:group_by(columns) local rs = resultset.new(self) rs._group_by = type(columns) == 'table' and columns or { columns } return rs end
-function resultset:order_by(columns) local rs = resultset.new(self) rs._order_by = type(columns) == 'table' and columns or { columns } return rs end
+function resultset:order_by(columns) local rs = resultset.new(self) rs._order_by = type(columns) == 'table' and #columns > 0 and columns or { columns } return rs end
 function resultset:distinct(distinct) local rs = resultset.new(self) rs._distinct = distinct return rs end
 function resultset:prefetch(relationship) 
   local rs = resultset.new(self) 
@@ -306,7 +312,7 @@ function resultset:merge_results(rows)
       local offset = self:offset_of_prefetch(relationship)
       local values = {}
       for j = offset, offset + #relationship.foreign_table.columns do
-        table.insert(values, rows[1]._row[j])
+        values[j - offset + 1] = rows[1]._row[j]
       end
       rawset(rows[1], relationship.name, result.new(self._connection, relationship.foreign_table, values))
     elseif relationship.type == "has_many" then
@@ -343,7 +349,13 @@ function resultset:each()
   end
 end
 function resultset:all() local t = {} for row in self:each() do table.insert(t, row) end return t end
-function resultset:find(conditions) return self:where(conditions):first() end
+function resultset:find(conditions) 
+  if (type(conditions) == "number" or type(conditions) == "string") then
+    assert(self._table.primary_key and #self._table.primary_key == 1)
+    conditions = { [self._table.primary_key[1]] = conditions }
+  end
+  return self:where(conditions):first() 
+end
 function resultset:first() 
   if self._variable_row_count then 
     for row in self:each() do 
@@ -377,6 +389,7 @@ function result.new(connection, table, row, rs) return setmetatable({ _connectio
 
 function result:__index(key)
   if rawget(result, key) then return rawget(result, key) end
+  if rawget(self._table, key) then return rawget(self._table, key) end
   for i, column in ipairs(self._table.columns) do
     if column.name == key then 
       return self._row[i]
@@ -409,15 +422,19 @@ end
 function result:insert()
   local columns = {}
   local fields = {}
+  local binds = {}
   for i = 1, #self._table.columns do
     if self._row[i] then
       table.insert(columns, self._connection:escape(self._table.columns[i].name))
       table.insert(fields, self._connection:translate_value(self._row[i]))
+      if type(self._row[i]) == 'table' and getmetatable(self._row[i]) == blob then
+        table.insert(binds, self._row[i])
+      end
     end
   end
   local statement = "INSERT INTO " .. self._connection:escape(self._table.name) .. " (" .. table.concat(columns, ",") .. ") VALUES"
   statement = statement .. "(" .. table.concat(fields, ",") .. ")"
-  local affected_rows, last_insert_id = self._connection:query(statement)
+  local affected_rows, last_insert_id = self._connection:query(statement, binds)
   if self._table.primary_key and #self._table.primary_key == 1 and last_insert_id and last_insert_id > 0 then
     self[self._table.primary_key[1]] = last_insert_id
     self._dirty = {}
@@ -426,19 +443,30 @@ function result:insert()
 end
 
 function result:update(params)
-  if not params then
-    params = { }
-    local has_one = false
-    for k,v in pairs(self._dirty) do
-      params[self._table.columns[k].name] = self._row[k]
-      has_one = true
+  if params then
+    for k,v in pairs(params) do
+      self[k] = v
     end
-    self.dirty = {}
-    if not has_one then return 0 end
   end
+  params = { }
+  local has_one = false
+  for k,v in pairs(self._dirty) do
+    params[self._table.columns[k].name] = self._row[k]
+    has_one = true
+  end
+  self.dirty = {}
+  if not has_one then return 0 end
   local statement = "UPDATE " .. self._connection:escape(self._table.name) .. " SET "
-  local fields = {} for k,v in pairs(params) do table.insert(fields, self._connection:escape(k) .. " = " .. self._connection:translate_value(v)) end
-  return self._connection:query(statement .. table.concat(fields, ", ") .. " WHERE " .. table.concat(map(assert(self._table.primary_key, "requires a primary key"), function(k) return self._connection:escape(k) .. " = " .. self._connection:translate_value(self[k]) end), " AND "))
+  local fields = {} 
+  local binds = {}
+  for k,v in pairs(params) do 
+    table.insert(fields, self._connection:escape(k) .. " = " .. self._connection:translate_value(v)) 
+    if type(v) == 'table' and getmetatable(v) == blob then
+      table.insert(binds, v)
+    end
+  end
+  local t = map(assert(self._table.primary_key, "requires a primary key"), function(k) return self._connection:escape(k) .. " = " .. self._connection:translate_value(self[k]) end)
+  return self._connection:query(statement .. table.concat(fields, ", ") .. " WHERE " .. table.concat(t, " AND "), binds)
 end
 
 function result:delete()
@@ -462,21 +490,27 @@ function resultset:create(params) return self:shadow(merge(self._default_values,
 function resultset:delete(params) 
   local statement = "DELETE FROM " .. self._connection:escape(self._table.name) 
   if self._where and #self._where > 0 then
-    statement = statement .. " WHERE " .. table.concat(map(self._where, function(e) return self:translate_conditions(e) end, " AND "))
+    local t = map(self._where, function(e) return self:translate_conditions(e) end)
+    statement = statement .. " WHERE " .. table.concat(t, " AND ")
   end
   return self._connection:query(statement)
 end
 function resultset:update(params)
   local statement = "UPDATE " .. self._connection:escape(self._table.name) .. " SET "
   local updates = {}
+  local binds = {}
   for k,v in pairs(params) do
     table.insert(updates, self._connection:escape(k) .. " = " .. self._connection:translate_value(v))
+    if type(v) == 'table' and getmetatable(v) == blob then
+      table.insert(binds, v)
+    end
   end
   statement = statement .. table.concat(assert(#updates > 0 and updates, "requires update params"), ", ")
   if self._where and #self._where > 0 then
-    statement = statement .. " WHERE " .. table.concat(map(self._where, function(e) return self:translate_conditions(e) end, " AND "))
+    local t = map(self._where, function(e) return self:translate_conditions(e) end)
+    statement = statement .. " WHERE " .. table.concat(t, " AND ")
   end
-  return self._connection:query(statement)
+  return self._connection:query(statement, binds)
 end
 
 function resultset:translate_condition_value(condition)
@@ -484,9 +518,7 @@ function resultset:translate_condition_value(condition)
   if t == 'table' then
     if #condition > 0 then return "(" .. table.concat(map(condition, function(v) return self:translate_condition_value(v) end, ","), ",") .. ")" end
     for k,v in pairs(condition) do return k:gsub("_", " "):upper() .. " " .. self:translate_condition_value(v) end
-  elseif t == 'string' then
-    return self._connection:translate_value(condition)
-  elseif t == 'number' then
+  elseif t == 'string' or t == 'number' or t == 'boolean' then
     return self._connection:translate_value(condition)
   end
   return '1=0'
@@ -501,7 +533,7 @@ function resultset:translate_conditions(condition)
       local t = type(value)
       if t == 'table' and #value > 0 then
         return self._connection:escape(key) .. " IN " .. self:translate_condition_value(value)
-      elseif t == 'string' or t == 'number' then
+      elseif t == 'string' or t == 'number' or t == 'boolean' then
         return self._connection:escape(key) .. " = " .. self:translate_condition_value(value)
       else
         return self._connection:escape(key) .. " " .. self:translate_condition_value(value)
@@ -540,7 +572,8 @@ function resultset:as_sql(as_count)
     end
   end
   if self._where and #self._where > 0 then
-    statement = statement .. " WHERE " .. table.concat(map(self._where, function(e) return self:translate_conditions(e) end, " AND "))
+    local t = map(self._where, function(e) return self:translate_conditions(e) end)
+    statement = statement .. " WHERE " .. table.concat(t, " AND ")
   end
   if self._group_by and #self._group_by > 0 then
     statement = statmeent .. " GROUP BY " .. table.concat(map(self._group_by, function(e) return self:translate_conditions(e) end, ", "))
@@ -549,7 +582,17 @@ function resultset:as_sql(as_count)
     statement = statement .. " HAVING " .. table.concat(map(self._having, function(e) return self:translate_conditions(e) end, " AND "))
   end
   if self._order_by and #self._order_by > 0 then
-    statement = statement .. " ORDER BY " .. table.concat(map(self._order_by, function(e) return self._connection:escape(e) end, ", "))
+    statement = statement .. " ORDER BY " .. table.concat(map(self._order_by, function(e) 
+      if type(e) == 'table' then
+        if e.desc then
+          return self._connection:escape(e.desc) .. " DESC"
+        elseif e.asc then
+          return self._connection:escape(e.asc)  .. " ASC"
+        end
+      else
+        return self._connection:escape(e) 
+      end
+    end, ", "))
   end
   if self._offset then statement = statement .. " OFFSET " .. self._offset end
   if self._rows then statement = statement .. " LIMIT " .. self._rows end

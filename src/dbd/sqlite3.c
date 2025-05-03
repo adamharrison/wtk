@@ -35,6 +35,7 @@ static int f_sqlite3_result_close(lua_State* L) {
     lua_pushstring(L, sqlite3_errmsg(result->sqlite->db));
     return 2;
   }
+  result->statement = NULL;
   return 0;
 }
 
@@ -58,9 +59,13 @@ static int f_sqlite3_result_fetchk(lua_State* L, int status, lua_KContext ctx) {
     case SQLITE_DONE:
       if (f_sqlite3_result_close(L) == 2)
         return 2;
-      lua_pushinteger(L, sqlite3_changes64(sqlite3_result->sqlite->db));
-      lua_pushinteger(L, sqlite3_last_insert_rowid(sqlite3_result->sqlite->db));
-      return 2;
+      if (sqlite3_result->columns > 0) {
+        return 0;
+      } else {
+        lua_pushinteger(L, sqlite3_changes64(sqlite3_result->sqlite->db));
+        lua_pushinteger(L, sqlite3_last_insert_rowid(sqlite3_result->sqlite->db));
+        return 2;
+      }
     case SQLITE_BUSY:
       if (sqlite3_result->sqlite->nonblocking && lua_iscoroutine(L))
         return lua_yieldk(L, 0, 0, f_sqlite3_result_fetchk);
@@ -94,8 +99,7 @@ static const luaL_Reg f_sqlite3_result_api[] = {
 
 
 static sqlite3_t* lua_tosqlite3(lua_State* L, int index) {
-  sqlite3_t* sqlite3 = (sqlite3_t*)lua_touserdata(L, index);
-  return sqlite3;
+  return (sqlite3_t*)lua_touserdata(L, index);
 }
 
 static int f_sqlite3_query(lua_State* L) {
@@ -103,9 +107,10 @@ static int f_sqlite3_query(lua_State* L) {
   size_t statement_length;
   const char* statement = luaL_checklstring(L, 2, &statement_length);
   sqlite3_stmt* stmt;
-  if (sqlite3_prepare_v2(sqlite->db, statement, statement_length, &stmt, NULL) != SQLITE_OK) {
+  int res = sqlite3_prepare_v2(sqlite->db, statement, statement_length, &stmt, NULL);
+  if (res != SQLITE_OK) {
     lua_pushnil(L);
-    lua_pushstring(L, sqlite3_errmsg(sqlite->db));
+    lua_pushstring(L, sqlite3_errstr(res));
     return 2;
   }
   sqlite3_result_t* result = lua_newuserdata(L, sizeof(sqlite3_result_t));
@@ -114,8 +119,49 @@ static int f_sqlite3_query(lua_State* L) {
   result->connection = luaL_ref(L, LUA_REGISTRYINDEX);
   result->sqlite = sqlite;
   result->columns = sqlite3_column_count(stmt);
-  lua_getfield(L, 1, "__mysql_result");
+  lua_getfield(L, 1, "__sqlite3_result");
   lua_setmetatable(L, -2);
+  
+  if (lua_type(L, 3) == LUA_TTABLE) {
+    size_t length = lua_rawlen(L, 3);
+    for (size_t i = 1; i <= length; ++i) {
+      lua_rawgeti(L, -2, i);
+      res = -1;
+      switch (lua_type(L, -1)) {
+        case LUA_TNUMBER:
+          if (lua_isinteger(L, -1))
+            res = sqlite3_bind_int64(stmt, i, lua_tointeger(L, -1));
+          else
+            res = sqlite3_bind_double(stmt, i, lua_tonumber(L, -1));
+        break;
+        case LUA_TNIL: sqlite3_bind_null(stmt, i); break;
+        case LUA_TSTRING: {
+          size_t len;
+          const char* str = lua_tolstring(L, -1, &len);
+          res = sqlite3_bind_text64(stmt, i, str, len, SQLITE_TRANSIENT, SQLITE_UTF8);
+        } break;
+        case LUA_TBOOLEAN: sqlite3_bind_int64(stmt, i, lua_toboolean(L, -1) ? 1 : 0); break;
+        case LUA_TTABLE: {
+          if (lua_rawlen(L, -1) == 1) {
+            lua_rawgeti(L, -1, 1);
+            size_t len;
+            const char* str = lua_tolstring(L, -1, &len);
+            res = sqlite3_bind_blob64(stmt, i, str, len, SQLITE_TRANSIENT);
+            lua_pop(L, 1);
+          }
+        } break;
+        default:
+          res = SQLITE_MISUSE;
+      }
+      if (res != SQLITE_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, sqlite3_errstr(res));
+        return 2;
+      }
+      lua_pop(L, 1);
+    }
+  }
+  
   // If this is a statement that returns no data, run it immediately.
   if (result->columns == 0) {
     int top = lua_gettop(L);
@@ -174,7 +220,10 @@ static int f_sqlite3_escape(lua_State* L) {
 
 static int f_sqlite3_close(lua_State* L) {
   sqlite3_t* sqlite3 = lua_tosqlite3(L, 1);
-  sqlite3_close(sqlite3->db);
+  if (sqlite3->db) {
+    sqlite3_close(sqlite3->db);
+    sqlite3->db = NULL;
+  }
   return 0;
 }
 
@@ -201,16 +250,22 @@ static int f_sqlite3_fd(lua_State* L) {
 }
 
 static int f_sqlite3_txn_start(lua_State* L) {
+  if (lua_gettop(L) > 1)
+    lua_pop(L, lua_gettop(L) - 1);
   lua_pushliteral(L, "BEGIN");
   return f_sqlite3_query(L);
 }
 
 static int f_sqlite3_txn_commit(lua_State* L) {
+  if (lua_gettop(L) > 1)
+    lua_pop(L, lua_gettop(L) - 1);
   lua_pushliteral(L, "COMMIT");
   return f_sqlite3_query(L);
 }
 
 static int f_sqlite3_txn_rollback(lua_State *L) {
+  if (lua_gettop(L) > 1)
+    lua_pop(L, lua_gettop(L) - 1);
   lua_pushliteral(L, "ROLLBACK");
   return f_sqlite3_query(L);
 }
@@ -227,7 +282,7 @@ static const luaL_Reg f_sqlite3_api[] = {
   { "txn_start",     f_sqlite3_txn_start      },
   { "txn_commit",    f_sqlite3_txn_commit     },
   { "txn_rollback",  f_sqlite3_txn_rollback   },
-  { NULL,        NULL                       }
+  { NULL,        NULL                         }
 };
 
 int luaopen_wtk_dbix_dbd_sqlite3(lua_State* L) {

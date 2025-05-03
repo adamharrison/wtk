@@ -1,9 +1,9 @@
 -- We go for simplicity above all else.
 local driver = require "wtk.server.driver"
-local socket, loop, sha1, base64 = driver.socket, driver.loop, driver.sha1, driver.base64
+local socket, loop, sha1, base64, system = driver.socket, driver.loop, driver.sha1, driver.base64, driver.system
 local PACKET_SIZE = 4096
 
-local Server = { Loop = driver.loop, Socket = driver.socket, sha1 = driver.sha1, base64 = driver.base64 }
+local Server = { Loop = driver.loop, Socket = driver.socket, sha1 = driver.sha1, base64 = driver.base64, countdown = driver.countdown }
 Server.__index = Server
 
 
@@ -12,7 +12,7 @@ Server.Websocket.__index = Server.Websocket
 function Server.Websocket.new(client) return setmetatable({ client = client }, Server.Websocket) end
 function Server.Websocket:handshake(request)
   assert(request.headers["sec-websocket-key"], "Missing required header.")
-  self.client:respond(101, { Upgrade = "websocket", Connection = "Upgrade", ["Sec-WebSocket-Accept"] = base64.encode(sha1.binary(request.headers["sec-websocket-key"] .. "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")) })
+  request:respond(101, { Upgrade = "websocket", Connection = "Upgrade", ["Sec-WebSocket-Accept"] = base64.encode(sha1.binary(request.headers["sec-websocket-key"] .. "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")) })
   return self
 end
 function Server.Websocket:write(message, opcode)
@@ -68,12 +68,20 @@ Response.__index = Response
 function Response.new(code, headers, body) return setmetatable({ code = code, headers = headers or {}, body = body }, Response) end
 function Response:write(client)
   local parts = { string.format("%s %d %s\r\n", "HTTP/1.1", self.code, client.server.codes[self.code]) }
-  if self.body and not self.headers['content-length'] then self.headers['content-length'] = #self.body end
+  if self.body and type(self.body) ~= 'function' and not self.headers['content-length'] then self.headers['content-length'] = #self.body end
   if not self.headers['connection'] then self.headers['connection'] = 'keep-alive' end
   for key,value in pairs(self.headers) do table.insert(parts, string.format("%s: %s\r\n", key, value)) end
   table.insert(parts, "\r\n")
   client:write(table.concat(parts))
-  if self.body then client:write(self.body) end
+  if self.body then 
+    if type(self.body) == 'function' then
+      for chunk in self.body do
+        client:write(chunk)
+      end
+    else
+      client:write(self.body)
+    end
+  end
   if client.server.verbose then
     if self.code >= 300 and self.code < 400 then
       client.server.log:verbose("RES %s %s %s", self.code, client.peer, self.headers.location)
@@ -106,7 +114,7 @@ function Request:parse_headers()
   for key,value in headers:gmatch("([^%:]+):%s*(.-)\r\n") do self.headers[key:lower()] = value end
   for key,value in (self.headers.cookie or ""):gmatch("([^=]+)=([^;]+)") do self.cookies[key] = value:gsub("%%([a-fA-F0-9][a-fA-F0-9])", function(e) return string.char(tonumber(e, 16)) end) end
   if #remainder > 0 then self.client.buffer = remainder end
-  assert(self.method == "GET" or self.headers['content-length'], "malformed request, requires content-length")
+  assert(self.method ~= "POST" or self.headers['content-length'], "malformed request, requires content-length")
   self.client.server.log:verbose("REQ %s %s %s", self.method, self.path, self.client.socket:peer())
   return self
 end
@@ -114,8 +122,14 @@ function Request:websocket()
   self.client.websocket = Server.Websocket.new(self.client):handshake(self)
   return self.client.websocket
 end
-function Request:body() if self.method == "GET" or self._body then return self._body end self._body = self:read(self.headers['content-length'] - self.length_read) return self._body end
-function Request:read(len) local str = self.client:read(len) self.length_read = self.length_read + #str return str end
+function Request:body() if self.method ~= "POST" and self.method ~= "PUT" or self._body then return self._body end self._body = self:read(self.headers['content-length'] - self.length_read) return self._body end
+function Request:read(len) 
+  local to_read = math.min(self.headers['content-length'] and (self.headers['content-length'] - self.length_read) or (self.method == "POST" and math.huge or 0), len)
+  if to_read == 0 then return nil end
+  local str = self.client:read(to_read)
+  self.length_read = self.length_read + #str 
+  return str 
+end
 function Request:respond(code, headers, body) 
   self.responded = true 
   if not headers['set-cookie'] and self.cookies then 
@@ -234,6 +248,21 @@ function Server.new(t)
   return self
 end
 
+function Server:error_handler(request, err, client)
+  if type(err) == 'table' and err.code and type(err.code) == "number" then
+    local msg = string.format("%d Error", err.code)
+    if err.message then msg = msg .. ": " .. err.message end
+    if self.verbose or not err.verbose then self.log:error(self.verbose and debug.traceback(msg, 3) or msg) end
+    if not request.responded then request:respond(err.code, { ["Content-Type"] = "text/plain; charset=UTF-8" }, err.code .. " " .. self.codes[err.code] .. "\n") end
+  else
+    local msg = string.format("Unhandled Error: %s", err) 
+    if self.verbose then self.log:error(debug.traceback(msg, 3)) else self.log:error(msg) end
+    if request and not request.responded then request:respond(500, { ["Content-Type"] = "text/plain; charset=UTF-8" }, "500 Internal Server Error") end
+    if not request then client:close() end
+  end
+  if request and request.client.websocket then request.client.websocket:close() end
+end
+
 function Server:accept()
   local socket = self.socket:accept()
   if socket then 
@@ -247,16 +276,7 @@ function Server:accept()
           self:accepted(client, request)
           if not request.responded then error({ code = 404 }) end
         end, function(err)
-          if type(err) == 'table' and err.code and type(err.code) == "number" then
-            local msg = string.format("%d Error", err.code)
-            if err.message then msg = msg .. ": " .. err.message end
-            if self.verbose or not err.verbose then self.log:error(msg) end
-            if not request.responded then request:respond(err.code, { ["Content-Type"] = "text/plain; charset=UTF-8" }, err.code .. " " .. self.codes[err.code] .. "\n") end
-          else
-            local msg = string.format("Unhandled Error: %s", err) 
-            if self.verbose then self.log:error(debug.traceback(msg, 3)) else self.log:error(msg) end
-            if not request.responded then request:respond(500, { ["Content-Type"] = "text/plain; charset=UTF-8" }, "500 Internal Server Error") end
-          end
+          self:error_handler(request, err, client)
         end)
         -- clear out buffer if it wasn't read
         request:body()
@@ -288,11 +308,22 @@ function Server:default_handler(request)
     local results = { request.path:match(route.path) }
     if results and #results > 0 then
       for i,v in ipairs(results) do if v == "" then results[i] = false end end
-      return route.handler(request, table.unpack(results))
+      return true, route.handler(request, table.unpack(results))
     end
   end
+  return false
 end
-function Server:route(method, path, func) table.insert(self.routes[method], { path = "^" .. path .. "$", handler = func }) table.sort(self.routes[method], function(a,b) return #a.path > #b.path end) end
+function Server:route(method, path, func) 
+  local target_path = "^" .. path .. "$"
+  for i,v in ipairs(self.routes[method]) do
+    if v.path == target_path then
+      v.handler = func
+      return
+    end
+  end
+  table.insert(self.routes[method], { path = target_path, handler = func }) 
+  table.sort(self.routes[method], function(a,b) return #a.path > #b.path end) 
+end
 function Server:get(path, func) return self:route("GET", path, func) end
 function Server:post(path, func) return self:route("POST", path, func) end
 function Server:put(path, func) return self:route("PUT", path, func) end
@@ -303,6 +334,22 @@ function Server.log:log(type, message, ...) io.stdout:write(string.format("[%5s]
 function Server.log:verbose(message, ...) if self._verbose then self:log("VERB", message, ...) end end
 function Server.log:info(message, ...) self:log("INFO", message, ...) end
 function Server.log:error(message, ...) self:log("ERROR", message, ...) end
+
+function Server:hot_reload(loop, file, options)
+  if not system.mtime(file) then return self.log:warn("Can't find " .. file .. ", so cannot hot reload.") end
+  local old_modified = system.mtime(file)
+  loop:add(self.countdown.new(0, 0.25), function()
+    if old_modified < system.mtime(file) then
+      local status, err = pcall(function()
+        assert(load(io.open(file, "rb"):read("*all"), "=" .. file))()
+        self.log:info("Hot reloaded " ..  file .. ".")
+        collectgarbage()
+      end)
+      if not status then self.log:error("Attempt to reload routes failed: " .. err) end
+      old_modified = system.mtime(file)
+    end
+  end)
+end
 
 function Server.escapeURI(param) return param:gsub("[^A-Za-z0-9%-_%.%!~%*'%(%)]", function(e) return string.format("%%%02x", e:byte(1)) end) end
 function Server.pargs(arguments, options)
