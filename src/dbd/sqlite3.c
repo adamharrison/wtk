@@ -201,7 +201,7 @@ static int f_sqlite3_connect(lua_State* L) {
 }
 
 static int f_sqlite3_quote(lua_State* L) {
-  luaL_gsub(L, luaL_gsub(L, luaL_checkstring(L, 2), "\\", "\\\\"), "'", "\\'");
+  luaL_gsub(L, luaL_checkstring(L, 2), "'", "''");
   lua_pushliteral(L, "'");
   lua_pushvalue(L, -2);
   lua_pushliteral(L, "'");

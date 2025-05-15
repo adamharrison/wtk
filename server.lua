@@ -122,7 +122,7 @@ function Request:websocket()
   self.client.websocket = Server.Websocket.new(self.client):handshake(self)
   return self.client.websocket
 end
-function Request:body() if self.method ~= "POST" and self.method ~= "PUT" or self._body then return self._body end self._body = self:read(self.headers['content-length'] - self.length_read) return self._body end
+function Request:body() if (self.method ~= "POST" and self.method ~= "PUT") or self._body then return self._body end self._body = self:read(self.headers['content-length'] - self.length_read) return self._body end
 function Request:read(len) 
   local to_read = math.min(self.headers['content-length'] and (self.headers['content-length'] - self.length_read) or (self.method == "POST" and math.huge or 0), len)
   if to_read == 0 then return nil end
@@ -141,7 +141,10 @@ function Request:respond(code, headers, body)
   return self 
 end
 function Request:redirect(path) return self:respond(302, { ["location"] = path }) end
-function Request:file(path) assert(not path:find("%.%."), "invalid path") return self:respond(200, { ['content-type'] = self.client.server:mimetype(path) }, assert(io.open(path, "rb"), { code = 404 }):read("*all")) end
+function Request:file(path) 
+  assert(not path:find("%.%."), "invalid path") 
+  return self:respond(200, { ['content-type'] = self.client.server:mimetype(path), ["cache-control"] = not self.client.server.debug and "max-age=86400" }, assert(io.open(path, "rb"), { code = 404 }):read("*all")) 
+end
 function Request:parts()
   local boundary = self.headers['content-type']:match("multipart/form-data;%s+boundary=(.+)$")
   if not boundary then return function() return nil end end
@@ -244,7 +247,12 @@ function Server.new(t)
   t.routes = { GET = { }, POST = { }, PUT = { }, DELETE = { } }
   local self = setmetatable(t, Server) 
   self.log._verbose = t.verbose
-  self.log:info("Server up on %s:%s", self.socket:peer())
+  local type, address, port = self.socket:peer()
+  if type == "unix" then
+    self.log:info("Server up at %s", address)
+  else 
+    self.log:info("Server up on %s:%s", address, port)
+  end
   return self
 end
 
@@ -253,13 +261,13 @@ function Server:error_handler(request, err, client)
     local msg = string.format("%d Error", err.code)
     if err.message then msg = msg .. ": " .. err.message end
     if self.verbose or not err.verbose then self.log:error(self.verbose and debug.traceback(msg, 3) or msg) end
-    if not request.responded then request:respond(err.code, { ["Content-Type"] = "text/plain; charset=UTF-8" }, err.code .. " " .. self.codes[err.code] .. "\n") end
+    if request and not request.responded then request:respond(err.code, { ["Content-Type"] = "text/plain; charset=UTF-8" }, err.code .. " " .. self.codes[err.code] .. "\n") end
   else
     local msg = string.format("Unhandled Error: %s", err) 
     if self.verbose then self.log:error(debug.traceback(msg, 3)) else self.log:error(msg) end
     if request and not request.responded then request:respond(500, { ["Content-Type"] = "text/plain; charset=UTF-8" }, "500 Internal Server Error") end
-    if not request then client:close() end
   end
+  if not request then client:close() end
   if request and request.client.websocket then request.client.websocket:close() end
 end
 
@@ -279,7 +287,7 @@ function Server:accept()
           self:error_handler(request, err, client)
         end)
         -- clear out buffer if it wasn't read
-        request:body()
+        if request then request:body() end
       end
     end)
     return client

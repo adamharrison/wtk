@@ -11,6 +11,7 @@
 #include <sys/timerfd.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <netinet/in.h>
 
 
@@ -18,7 +19,8 @@ typedef struct { int fd; } generic_fd_t;
 typedef struct { int fd; } socket_t;
 typedef struct { int fd; double recurring; } countdown_t;
 
-int imin(int a, int b) { return a < b ? a : b; }
+static int imin(int a, int b) { return a < b ? a : b; }
+static int imax(int a, int b) { return a > b ? a : b; }
 
 #define lua_newobject(L, name) lua_newuserdata(L, sizeof(name##_t)); luaL_setmetatable(L, "wtk.server." #name);
 
@@ -387,16 +389,31 @@ static const luaL_Reg countdown_lib[] = {
 };
 
 static int f_socket_bind(lua_State *L) {
-  struct sockaddr_in bind_addr = {0};
-  size_t addr_len = sizeof(bind_addr);
+  struct sockaddr* bind_addr = NULL;
+  struct sockaddr_in in_bind_addr = {0};
+  struct sockaddr_un un_bind_addr = {0};
+  size_t addr_len = 0;
   socket_t* sock = lua_newobject(L, socket);
-  sock->fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
-  bind_addr.sin_family = AF_INET;
-  bind_addr.sin_addr.s_addr = INADDR_ANY;
-  bind_addr.sin_port = htons(luaL_checkinteger(L, 2));
+  const char* host = luaL_checkstring(L, 1);
+  if (strncmp(host, "unix://", 7) == 0) {
+		sock->fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
+		un_bind_addr.sun_family = AF_UNIX;
+		strncpy(un_bind_addr.sun_path, &host[7], sizeof(un_bind_addr.sun_path));
+		bind_addr = (struct sockaddr*)&un_bind_addr;
+		addr_len = sizeof(un_bind_addr);
+  } else {
+		sock->fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+		in_bind_addr.sin_family = AF_INET;
+		in_bind_addr.sin_addr.s_addr = INADDR_ANY;
+		if (inet_aton(host, &in_bind_addr.sin_addr) == 0)
+			return luaL_error(L, "Unable to parse address: %s", strerror(errno));
+		in_bind_addr.sin_port = htons(luaL_checkinteger(L, 2));
+		bind_addr = (struct sockaddr*)&in_bind_addr;
+		addr_len = sizeof(in_bind_addr);
+	}
   int optval = 1;
   setsockopt(sock->fd, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval));
-  if (bind(sock->fd, (struct sockaddr *) &bind_addr, sizeof(bind_addr)) == -1)
+  if (bind(sock->fd, (struct sockaddr *) bind_addr, addr_len) == -1)
     return luaL_error(L, "Unable to bind: %s", strerror(errno));
   if (listen(sock->fd, 16) == -1)
     return luaL_error(L, "Unable to listen: %s", strerror(errno));
@@ -418,19 +435,31 @@ static int f_socket_accept(lua_State* L) {
 }
 
 static int f_socket_peer(lua_State* L) {
-  struct sockaddr_in peer_addr = {0};
+	char peer_addr[imax(sizeof(struct sockaddr_in), sizeof(struct sockaddr_un))];
   socklen_t peer_addr_len = sizeof(peer_addr);
   socket_t* sock = luaL_checkudata(L, 1, "wtk.server.socket");
-  getsockname(sock->fd, (struct sockaddr*)&peer_addr, &peer_addr_len);
-  char str[INET_ADDRSTRLEN+1] = {0};
-  lua_pushstring(L, inet_ntoa(peer_addr.sin_addr));
-  lua_pushinteger(L, ntohs(peer_addr.sin_port));
-  return 2;
+  if (getsockname(sock->fd, (struct sockaddr*)&peer_addr, &peer_addr_len))
+		return luaL_error(L, "error retrieving address: %s", strerror(errno));
+  if (((struct sockaddr*)peer_addr)->sa_family == AF_INET) {
+		lua_pushliteral(L, "inet");
+		lua_pushstring(L, inet_ntoa(((struct sockaddr_in*)peer_addr)->sin_addr));
+		lua_pushinteger(L, ntohs(((struct sockaddr_in*)peer_addr)->sin_port));
+		return 3;
+	} else if (((struct sockaddr*)peer_addr)->sa_family == AF_UNIX) {
+		lua_pushliteral(L, "unix");
+		lua_pushstring(L, ((struct sockaddr_un*)peer_addr)->sun_path);
+		return 2;
+	}
+	return 0;
 }
 
 static int f_socket_close(lua_State* L) {
   socket_t* sock = luaL_checkudata(L, 1, "wtk.server.socket");
   if (sock->fd) {
+		struct sockaddr_un peer_addr = {0};
+		socklen_t peer_addr_len = sizeof(peer_addr);
+		if (!getsockname(sock->fd, (struct sockaddr*)&peer_addr, &peer_addr_len) && peer_addr.sun_family == AF_UNIX)
+			unlink(peer_addr.sun_path);
     close(sock->fd);
     sock->fd = 0;
   }
@@ -440,6 +469,7 @@ static int f_socket_close(lua_State* L) {
 static int f_socket_recv(lua_State* L) {
   socket_t* sock = luaL_checkudata(L, 1, "wtk.server.socket");
   int bytes = luaL_checkinteger(L, 2), length = 0, total_received = 0;
+  int err = 0;
   luaL_Buffer buffer;
   char chunk[4096];
   luaL_buffinitsize(L, &buffer, bytes);
@@ -449,14 +479,18 @@ static int f_socket_recv(lua_State* L) {
       bytes -= length;
       luaL_addlstring(&buffer, chunk, length);
       total_received += length;
-    } else
-				break;
+    } else {
+			err = errno;
+			break;
+		}
   }
-  luaL_pushresult(&buffer);
-  if (errno == EAGAIN || errno == EWOULDBLOCK || total_received == 0)
+  luaL_pushresult(&buffer);  
+  if (length < 0 && (err == EAGAIN || err == EWOULDBLOCK))
 		lua_pushliteral(L, "timeout");
+	else if (total_received == 0 && length == 0)
+		lua_pushliteral(L, "closed");
 	else
-		lua_pushstring(L, length == -1 ? strerror(errno) : NULL);
+		lua_pushstring(L, length == -1 ? strerror(err) : NULL);
   return 2;
 }
 
