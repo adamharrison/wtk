@@ -141,6 +141,10 @@ function connection:translate_value(value)
   return ''
 end
 
+function connection:date(date)
+  return os.date("%Y-%m-%d %H:%M:%S", date)
+end
+
 function connection:translate_table(t, options)
   local c = self._c
   local table_statement = string.format("CREATE TABLE %s (", self:escape(t.name))
@@ -507,7 +511,7 @@ function resultset:update(params)
   end
   statement = statement .. table.concat(assert(#updates > 0 and updates, "requires update params"), ", ")
   if self._where and #self._where > 0 then
-    local t = map(self._where, function(e) return self:translate_conditions(e) end)
+    local t = map(self._where, function(e) return "(" .. self:translate_conditions(e) .. ")" end)
     statement = statement .. " WHERE " .. table.concat(t, " AND ")
   end
   return self._connection:query(statement, binds)
@@ -517,7 +521,15 @@ function resultset:translate_condition_value(condition)
   local t = type(condition)
   if t == 'table' then
     if #condition > 0 then return "(" .. table.concat(map(condition, function(v) return self:translate_condition_value(v) end, ","), ",") .. ")" end
-    for k,v in pairs(condition) do return k:gsub("_", " "):upper() .. " " .. self:translate_condition_value(v) end
+    for k,v in pairs(condition) do 
+      local key = k
+      if k == "!=" and type(v) == 'table' then
+        key = "NOT IN"
+      elseif k == "==" and type(v) == 'table' then
+        key = "IN"
+      end
+      return key:gsub("_", " "):upper() .. " " .. self:translate_condition_value(v) 
+    end
   elseif t == 'string' or t == 'number' or t == 'boolean' then
     return self._connection:translate_value(condition)
   end
@@ -528,7 +540,7 @@ function resultset:translate_conditions(condition)
   if type(condition) == 'string' then return condition end
   for key, value in pairs(condition) do
     if key == "and" or key == "or" then
-      return table.concat(map(value, function(c) return self:translate_conditions(c) end), key)
+      return table.concat(map(value, function(c) return self:translate_conditions(c) end), " " .. key .. " ")
     else
       local t = type(value)
       if t == 'table' and #value > 0 then
@@ -572,7 +584,7 @@ function resultset:as_sql(as_count)
     end
   end
   if self._where and #self._where > 0 then
-    local t = map(self._where, function(e) return self:translate_conditions(e) end)
+    local t = map(self._where, function(e) return "(" .. self:translate_conditions(e) .. ")" end)
     statement = statement .. " WHERE " .. table.concat(t, " AND ")
   end
   if self._group_by and #self._group_by > 0 then

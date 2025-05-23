@@ -110,19 +110,32 @@ function Request:parse_headers()
   self.method, self.path, self.version, headers, remainder = table.concat(self.buffer):match("^(%S+) (%S+) (%S+)\r\n(.-\r\n)\r\n(.*)$")
   self.params, self.path, self.search = {}, self.path:match("^([^?]+)(%??[^?]*)$")
   assert(self.method and self.path, "malformed request")
-  if self.search then for key,value in self.search:gmatch("([^=]+)=([^&]+)") do self.params[key] = value:gsub("%%([a-fA-F0-9][a-fA-F0-9])", function(e) return string.char(tonumber(e, 16)) end) end end
+  if self.search then for key,value in self.search:gmatch("([^=%?]+)=([^&]+)") do self.params[key] = value:gsub("%%([a-fA-F0-9][a-fA-F0-9])", function(e) return string.char(tonumber(e, 16)) end) end end
   for key,value in headers:gmatch("([^%:]+):%s*(.-)\r\n") do self.headers[key:lower()] = value end
   for key,value in (self.headers.cookie or ""):gmatch("([^=]+)=([^;]+)") do self.cookies[key] = value:gsub("%%([a-fA-F0-9][a-fA-F0-9])", function(e) return string.char(tonumber(e, 16)) end) end
   if #remainder > 0 then self.client.buffer = remainder end
   assert(self.method ~= "POST" or self.headers['content-length'], "malformed request, requires content-length")
-  self.client.server.log:verbose("REQ %s %s %s", self.method, self.path, self.client.socket:peer())
+  self.client.server.log:verbose("REQ %s %s %s", self.method, self.path, self.client.peer)
   return self
 end
 function Request:websocket()
   self.client.websocket = Server.Websocket.new(self.client):handshake(self)
   return self.client.websocket
 end
-function Request:body() if (self.method ~= "POST" and self.method ~= "PUT") or self._body then return self._body end self._body = self:read(self.headers['content-length'] - self.length_read) return self._body end
+function Request:body() 
+  if (self.method ~= "POST" and self.method ~= "PUT") or self._body then 
+    return self._body 
+  end 
+  local chunks = { }
+  while self.length_read < tonumber(self.headers['content-length']) do
+    local chunk = assert(self:read(tonumber(self.headers['content-length']) - self.length_read))
+    if chunk and #chunk > 0 then
+      table.insert(chunks, chunk)
+    end
+  end
+  self._body = table.concat(chunks)
+  return self._body 
+end
 function Request:read(len) 
   local to_read = math.min(self.headers['content-length'] and (self.headers['content-length'] - self.length_read) or (self.method == "POST" and math.huge or 0), len)
   if to_read == 0 then return nil end
@@ -193,7 +206,7 @@ end
 
 local Client = {}
 Client.__index = Client
-function Client.new(server, socket) return setmetatable({ last_activity = os.time(), server = server, waiting = nil, socket = socket, responsed = false, peer = socket:peer() }, Client) end
+function Client.new(server, socket) return setmetatable({ last_activity = os.time(), server = server, waiting = nil, socket = socket, responsed = false, peer = select(2, socket:peer()) }, Client) end
 function Client:write(buf) self.last_activity = os.time() return self.socket:send(buf) end
 function Client:read(len) 
   self.last_activity = os.time() 
@@ -275,7 +288,7 @@ function Server:accept()
   local socket = self.socket:accept()
   if socket then 
     local client = Client.new(self, socket)
-    self.log:verbose("Incoming connection from '%s'", socket:peer())
+    self.log:verbose("Incoming connection from '%s'", select(2, socket:peer()))
     client.co = coroutine.create(function() 
       while not client.closed do
         local request
