@@ -28,7 +28,7 @@ function Server.Websocket:write(message, opcode)
     table.insert(t, string.pack("!1>I1I8", (masked << 7) | 127, #message))
   end
   table.insert(t, message)
-  self.client:write(table.concat(t))
+  self.client:write_block(table.concat(t))
 end
 function Server.Websocket:read()
   local accumulator, original_opcode = ""
@@ -50,7 +50,7 @@ function Server.Websocket:read()
     for i = 1, #encoded do table.insert(decoded, string.char(encoded:byte(i) ~ mask:byte(((i - 1) % 4) + 1))) end
     accumulator = table.concat(decoded)
     if opcode == Server.Websocket.op.PING then 
-      self:write(Server.Websocket.op.PONG, accumulator)
+      self:write_block(Server.Websocket.op.PONG, accumulator)
       accumulator, original_opcode = "", nil
     elseif opcode == Server.Websocket.op.CLOSE then
       self.client:close()
@@ -72,14 +72,14 @@ function Response:write(client)
   if not self.headers['connection'] then self.headers['connection'] = 'keep-alive' end
   for key,value in pairs(self.headers) do table.insert(parts, string.format("%s: %s\r\n", key, value)) end
   table.insert(parts, "\r\n")
-  client:write(table.concat(parts))
+  client:write_block(table.concat(parts))
   if self.body then 
     if type(self.body) == 'function' then
       for chunk in self.body do
-        client:write(chunk)
+        client:write_block(chunk)
       end
     else
-      client:write(self.body)
+      client:write_block(self.body)
     end
   end
   if client.server.verbose then
@@ -207,7 +207,25 @@ end
 local Client = {}
 Client.__index = Client
 function Client.new(server, socket) return setmetatable({ last_activity = os.time(), server = server, waiting = nil, socket = socket, responsed = false, peer = select(2, socket:peer()) }, Client) end
-function Client:write(buf) self.last_activity = os.time() return self.socket:send(buf) end
+function Client:write(buf) 
+  self.last_activity = os.time() 
+  return self.socket:send(buf) 
+end
+function Client:write_block(buf) 
+  while #buf > 0 do
+    local len, err = self:write(buf)
+    if not len and err == "timeout" then 
+      print("YIELD WRITE")
+      self:yield("write") 
+    elseif len and len >= #buf then
+      break
+    elseif len then
+      buf = buf:sub(len + 1)
+    else
+      error({ code = 500, message = "Error writing to socket: " .. err })
+    end
+  end
+end
 function Client:read(len) 
   self.last_activity = os.time() 
   if self.buffer then
@@ -233,22 +251,26 @@ function Client:read(len)
   end
 end
 function Client:close() self.server.log:verbose("Manually closing connnection.") self.socket:close() self.closed = true end
-function Client:yield() coroutine.yield({ socket = self.socket, edge = true }) end
+function Client:yield(type) coroutine.yield({ socket = self.socket, type = type or "read" }) end
 function Client:process()
   while coroutine.status(self.co) ~= "dead" do
     local status, result = coroutine.resume(self.co)
     if coroutine.status(self.co) ~= "dead" and result then
-      if self.waiting and self.waiting ~= result.socket then 
+      if self.waiting and self.waiting ~= result.socket or (self.waiting_type ~= result.waiting_type) then   
         self.server.loop:rm(self.waiting) 
         self.waiting = nil 
+        self.waiting_type = nil
       end
       if not self.waiting and (result.socket or result.waiting) then
-        self.waiting = self.server.loop:add(result.socket or timer.new(result.timeout), function() self:process() end, result.edge)
+        self.waiting_type = result.type or "read"
+        self.waiting = self.server.loop:add(result.socket or timer.new(result.timeout), function() 
+          self:process() 
+        end, self.waiting_type, result.edge)
       end
       break
     end
   end
-  if self.waiting then
+  if coroutine.status(self.co) == "dead" and self.waiting then
     self.server.loop:rm(self.waiting)
   end
 end
@@ -311,7 +333,7 @@ end
 function Server:add(loop)
   loop:add(self.socket, function() 
     self:accept():process() 
-  end)
+  end, "read")
   self.loop = loop
   return self
 end

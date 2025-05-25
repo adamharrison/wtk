@@ -240,6 +240,7 @@ function resultset:having(params)
 end
 function resultset:rows(rows) local rs = resultset.new(self) rs._rows = rows return rs end
 function resultset:offset(offset) local rs = resultset.new(self) rs._offset = offset return rs end
+function resultset:columns(columns) local rs = resultset.new(self) rs._columns = columns return rs end
 function resultset:group_by(columns) local rs = resultset.new(self) rs._group_by = type(columns) == 'table' and columns or { columns } return rs end
 function resultset:order_by(columns) local rs = resultset.new(self) rs._order_by = type(columns) == 'table' and #columns > 0 and columns or { columns } return rs end
 function resultset:distinct(distinct) local rs = resultset.new(self) rs._distinct = distinct return rs end
@@ -520,6 +521,8 @@ end
 function resultset:translate_condition_value(condition)
   local t = type(condition)
   if t == 'table' then
+    if condition == NULL then return "NULL" end
+    if getmetatable(condition) == resultset then return condition:as_sql() end
     if #condition > 0 then return "(" .. table.concat(map(condition, function(v) return self:translate_condition_value(v) end, ","), ",") .. ")" end
     for k,v in pairs(condition) do 
       local key = k
@@ -543,10 +546,14 @@ function resultset:translate_conditions(condition)
       return table.concat(map(value, function(c) return self:translate_conditions(c) end), " " .. key .. " ")
     else
       local t = type(value)
-      if t == 'table' and #value > 0 then
+      if t == 'table' and getmetatable(value) == resultset then
+        return self._connection:escape(key) .. " IN (" .. value:as_sql() .. ")"
+      elseif t == 'table' and #value > 0 then
         return self._connection:escape(key) .. " IN " .. self:translate_condition_value(value)
       elseif t == 'string' or t == 'number' or t == 'boolean' then
         return self._connection:escape(key) .. " = " .. self:translate_condition_value(value)
+      elseif value == NULL then
+        return self._connection:escape(key) .. " IS NULL"
       else
         return self._connection:escape(key) .. " " .. self:translate_condition_value(value)
       end

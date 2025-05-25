@@ -261,12 +261,20 @@ static int lua_tofd(lua_State* L, int index) {
 }
 
 static int f_loop_add(lua_State* L) {
-	lua_getfield(L, 1, "epollfd");
-	int fd = lua_tofd(L, 2);
-	int mask = EPOLLIN | EPOLLRDHUP | EPOLLERR | EPOLLHUP;
-	if (lua_isboolean(L, 4))
+	int mask = EPOLLRDHUP | EPOLLPRI | EPOLLERR | EPOLLHUP;
+	if (lua_type(L, 4) == LUA_TSTRING)	{
+		const char* type = lua_tostring(L, 4);
+		if (strcmp(type, "read") == 0)
+			mask |= EPOLLIN;
+		else if (strcmp(type, "write") == 0)
+			mask |= EPOLLOUT;
+	} else
+		mask |= EPOLLIN;
+	if (lua_isboolean(L, 5) && lua_toboolean(L, 5))
 		mask |= EPOLLET;
-	struct epoll_event event = { .events = EPOLLIN | EPOLLRDHUP | EPOLLERR | EPOLLHUP, .data = { .fd = fd } };
+	int fd = lua_tofd(L, 2);
+	lua_getfield(L, 1, "epollfd");
+	struct epoll_event event = { .events = mask, .data = { .fd = fd } };
 	epoll_ctl(luaL_checkinteger(L, -1), EPOLL_CTL_ADD, fd, &event);
 	luaL_getsubtable(L, 1, "fds");
 	lua_pushinteger(L, fd); 
@@ -283,7 +291,7 @@ static int f_loop_add(lua_State* L) {
 
 static int f_loop_rm(lua_State* L) {
 	lua_getfield(L, 1, "epollfd");
-	int fd = lua_tofd(L, -1);
+	int fd = lua_tofd(L, 2);
 	epoll_ctl(luaL_checkinteger(L, -1), EPOLL_CTL_DEL, fd, NULL);
 	luaL_getsubtable(L, 1, "fds");
 	lua_pushinteger(L, fd);
@@ -507,6 +515,7 @@ static int f_socket_send(lua_State* L) {
 			lua_pushstring(L, strerror(errno));
 	} else {
 		lua_pushinteger(L, res);
+		lua_pushnil(L);
 	}
   return 2;
 }
