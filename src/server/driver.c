@@ -495,6 +495,10 @@ static int f_socket_recv(lua_State* L) {
   luaL_pushresult(&buffer);  
   if (length < 0 && (err == EAGAIN || err == EWOULDBLOCK))
 		lua_pushliteral(L, "timeout");
+	else if (length < 0 && err == ECONNRESET)
+		lua_pushliteral(L, "reset");
+	else if (length < 0 && err == EPIPE)
+		lua_pushliteral(L, "pipe");
 	else if (total_received == 0 && length == 0)
 		lua_pushliteral(L, "closed");
 	else
@@ -511,6 +515,10 @@ static int f_socket_send(lua_State* L) {
 		lua_pushnil(L);
 		if (errno == EAGAIN || errno == EWOULDBLOCK)
 			lua_pushliteral(L, "timeout");
+		else if (errno == ECONNRESET)
+			lua_pushliteral(L, "reset");
+		else if (errno == EPIPE)
+			lua_pushliteral(L, "pipe");
 		else
 			lua_pushstring(L, strerror(errno));
 	} else {

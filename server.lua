@@ -67,6 +67,7 @@ local Response = { }
 Response.__index = Response
 function Response.new(code, headers, body) return setmetatable({ code = code, headers = headers or {}, body = body }, Response) end
 function Response:write(client)
+  if client.closed then return end
   local parts = { string.format("%s %d %s\r\n", "HTTP/1.1", self.code, client.server.codes[self.code]) }
   if self.body and type(self.body) ~= 'function' and not self.headers['content-length'] then self.headers['content-length'] = #self.body end
   if not self.headers['connection'] then self.headers['connection'] = 'keep-alive' end
@@ -215,8 +216,10 @@ function Client:write_block(buf)
   while #buf > 0 do
     local len, err = self:write(buf)
     if not len and err == "timeout" then 
-      print("YIELD WRITE")
       self:yield("write") 
+    elseif not len and (err == "reset" or err == "pipe") then
+      self.closed = true
+      break
     elseif len and len >= #buf then
       break
     elseif len then
@@ -243,7 +246,7 @@ function Client:read(len)
     if packet and #packet > 0 then return packet end
     if err == "timeout" then
       self:yield()
-    elseif err == "closed" then
+    elseif err == "closed" or err == "reset" or err == "pipe" then
       self.closed = true
     else
       error({ code = 500, message = "Failed reading from socket: " .. err })
