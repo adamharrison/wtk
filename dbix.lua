@@ -17,6 +17,7 @@ end
 local function first(a) return a end
 
 dbix.schema = schema
+dbix.connection = connection
 schema.table = stable
 schema.resultset = resultset
 schema.__index = schema
@@ -238,19 +239,22 @@ function resultset:having(params)
   end
   return rs
 end
+function resultset:__len() return self:count() end
 function resultset:rows(rows) local rs = resultset.new(self) rs._rows = rows return rs end
 function resultset:offset(offset) local rs = resultset.new(self) rs._offset = offset return rs end
 function resultset:columns(columns) local rs = resultset.new(self) rs._columns = columns return rs end
 function resultset:group_by(columns) local rs = resultset.new(self) rs._group_by = type(columns) == 'table' and columns or { columns } return rs end
 function resultset:order_by(columns) local rs = resultset.new(self) rs._order_by = type(columns) == 'table' and #columns > 0 and columns or { columns } return rs end
 function resultset:distinct(distinct) local rs = resultset.new(self) rs._distinct = distinct return rs end
-function resultset:prefetch(relationship) 
+function resultset:prefetch(relationships) 
   local rs = resultset.new(self) 
-  local r = assert(grep(self._table.relationships, function(r) return r.name == relationship end)[1], "can't find relationship " .. relationship)
-  table.insert(rs._prefetch, r)
-  if r.type == "has_many" then
-    rs._variable_row_count = true
-    rs._order_by = map(self._table.primary_key, function(e) return dbix.raw(self._connection:escape("me", e)) end)
+  for i, relationship in ipairs(type(relationships) == 'table' and relationships or { relationships }) do
+    local r = assert(grep(self._table.relationships, function(r) return r.name == relationship end)[1], "can't find relationship " .. relationship)
+    table.insert(rs._prefetch, r)
+    if r.type == "has_many" then
+      rs._variable_row_count = true
+      rs._order_by = map(self._table.primary_key, function(e) return dbix.raw(self._connection:escape("me", e)) end)
+    end
   end
   return rs 
 end
@@ -304,7 +308,7 @@ function resultset:offset_of_prefetch(relationship)
     if v == relationship then
       break
     else
-      offset = offset + #v.table.columns
+      offset = offset + #v.foreign_table.columns
     end
   end
   return offset
@@ -325,7 +329,7 @@ function resultset:merge_results(rows)
       local records = map(rows, function(row)
         local values = {}
         for j = offset, offset + (#relationship.foreign_table.columns - 1) do
-          table.insert(values, rows[1]._row[j])
+          values[j - offset + 1] = row._row[j]
         end
         return result.new(self._connection, relationship.foreign_table, values)
       end)
@@ -385,6 +389,7 @@ function resultset:take(num)
   return self:rows(num):all()
 end
 function resultset:count() 
+  if self._cached then return #self._cached end
   local query = self._connection:query(self:as_sql(true))
   local count = math.floor(query:fetch()[1]) 
   query:close()
@@ -415,13 +420,16 @@ function result:__index(key)
 end
 
 function result:__newindex(key, value)
+  local found_index = false
   for i = 1, #self._table.columns do
     if self._table.columns[i].name == key then
       self._row[i] = value
       self._dirty[i] = true
+      found_index = true
       break
     end
   end
+  if not found_index then rawset(self, key, value) end
 end
 
 function result:insert()
@@ -527,8 +535,10 @@ function resultset:translate_condition_value(condition)
     for k,v in pairs(condition) do 
       local key = k
       if k == "!=" and type(v) == 'table' then
+        if v == NULL then return "IS NOT NULL" end
         key = "NOT IN"
       elseif k == "==" and type(v) == 'table' then
+        if v == NULL then return "IS NULL" end
         key = "IN"
       end
       return key:gsub("_", " "):upper() .. " " .. self:translate_condition_value(v) 
@@ -585,7 +595,8 @@ function resultset:as_sql(as_count)
   statement = statement .. " FROM " .. self._connection:escape(self._table.name) .. " " .. self._connection:escape("me")
   if self._prefetch and #self._prefetch > 0 then
     for i,v in ipairs(self._prefetch) do
-      statement = statement .. " JOIN " .. self._connection:escape(v.foreign_table.name) .. " " .. self._connection:escape(v.name) .. " ON " .. table.concat(map(v.self_columns, function(sc, i) 
+      local join_type = v.type == "has_many" and "LEFT JOIN" or "JOIN"
+      statement = statement .. " " .. join_type .. " " .. self._connection:escape(v.foreign_table.name) .. " " .. self._connection:escape(v.name) .. " ON " .. table.concat(map(v.self_columns, function(sc, i) 
         return self._connection:escape("me", sc) .. " = " .. self._connection:escape(v.name, v.foreign_columns[i])
       end), " AND ")
     end
@@ -602,7 +613,9 @@ function resultset:as_sql(as_count)
   end
   if self._order_by and #self._order_by > 0 then
     statement = statement .. " ORDER BY " .. table.concat(map(self._order_by, function(e) 
-      if type(e) == 'table' then
+      if getmetatable(e) == raw then 
+        return e[1]
+      elseif type(e) == 'table' then
         if e.desc then
           return self._connection:escape(e.desc) .. " DESC"
         elseif e.asc then
