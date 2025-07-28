@@ -392,6 +392,12 @@ static int client_requestk(lua_State* L, int status, lua_KContext ctx) {
             int is_multiple = !lua_isnil(L, -1);
             if (!is_multiple)
               lua_pop(L, 1);
+            else if (lua_type(L, -1) != LUA_TTABLE) {
+              lua_newtable(L);
+              lua_pushvalue(L, -2);
+              lua_rawseti(L, -2, 1);
+              lua_replace(L, -2);
+            }
             for (value_offset = value_offset + 1; *value_offset == ' '; ++value_offset);
             if (strncmp(header_start, "connection", 10) == 0 && header_end - value_offset == 5 && strncmp(value_offset + 1, "close", 5) == 0)
               request->close_on_complete = 1;
@@ -1084,16 +1090,16 @@ static const luaL_Reg client_api[] = {
 };
 
 
-int luaopen_wtk_client_driver(lua_State* L) {
+int luaopen_wtk_client(lua_State* L) {
   luaL_newlib(L, client_api);
   lua_pushvalue(L, -1);
   lua_setmetatable(L, -2);
   const char* lua_agent_code = "\n\
     local client = ...\n\
-    local PATHSEP = '/'\
-    client.ssl('system', '/tmp') .. PATHSEP .. 'ssl.certs', 0)\n\
+    local PATHSEP = '/'\n\
+    client.ssl('system', '/tmp' .. PATHSEP .. 'ssl.certs', 0)\n\
     function client.new(default_options)\n\
-      local options = { max_redirects = 10, yield = 0.01, max_timeout = 5, headers = { ['user-agent'] = 'lite-xl-www/' .. www.version } }\n\
+      local options = { max_redirects = 10, yield = 0.01, max_timeout = 5, headers = { ['user-agent'] = 'wtk-client/1.0' } }\n\
       for k,v in pairs(default_options or {}) do options[k] = v end\n\
       return {\n\
         connections = {},\n\
@@ -1120,7 +1126,7 @@ int luaopen_wtk_client_driver(lua_State* L) {
               if not t.headers['cookie'] then t.headers['cookie'] = table.concat(values, '; ') end\n\
             end\n\
             t.connection = self.connections[hostname]\n\
-            res, connection = www.request(t)\n\
+            res, connection = client.request(t)\n\
             self.connections[hostname] = connection\n\
             if res.headers['set-cookie'] then\n\
               for i,v in ipairs(type(res.headers['set-cookie']) == 'table' and res.headers['set-cookie'] or { res.headers['set-cookie'] }) do\n\
