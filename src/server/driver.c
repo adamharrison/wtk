@@ -16,7 +16,7 @@
 
 
 typedef struct { int fd; } generic_fd_t;
-typedef struct { int fd; } socket_t;
+typedef struct { int fd; int peer; } socket_t;
 typedef struct { int fd; double recurring; } countdown_t;
 
 static int imin(int a, int b) { return a < b ? a : b; }
@@ -425,6 +425,10 @@ static int f_socket_bind(lua_State *L) {
     return luaL_error(L, "Unable to bind: %s", strerror(errno));
   if (listen(sock->fd, 16) == -1)
     return luaL_error(L, "Unable to listen: %s", strerror(errno));
+  if (un_bind_addr.sun_family == AF_UNIX) {
+		if (chmod(un_bind_addr.sun_path, S_IRUSR | S_IWUSR | S_IXUSR | S_IRGRP | S_IWGRP | S_IXGRP | S_IROTH | S_IWOTH | S_IXOTH))
+			return luaL_error(L, "Unable to chmod: %s", strerror(errno));
+	}
   return 1;
 }
 
@@ -438,6 +442,7 @@ static int f_socket_accept(lua_State* L) {
 		return luaL_error(L, "error setting non-blocking: %s", strerror(errno));
   socket_t* peer = lua_newuserdata(L, sizeof(socket_t));
   peer->fd = fd;
+  peer->peer = 1;
   luaL_setmetatable(L, "wtk.server.socket");
   return 1;
 }
@@ -464,10 +469,12 @@ static int f_socket_peer(lua_State* L) {
 static int f_socket_close(lua_State* L) {
   socket_t* sock = luaL_checkudata(L, 1, "wtk.server.socket");
   if (sock->fd) {
-		struct sockaddr_un peer_addr = {0};
-		socklen_t peer_addr_len = sizeof(peer_addr);
-		if (!getsockname(sock->fd, (struct sockaddr*)&peer_addr, &peer_addr_len) && peer_addr.sun_family == AF_UNIX)
-			unlink(peer_addr.sun_path);
+		if (!sock->peer) {
+			struct sockaddr_un peer_addr = {0};
+			socklen_t peer_addr_len = sizeof(peer_addr);
+			if (!getsockname(sock->fd, (struct sockaddr*)&peer_addr, &peer_addr_len) && peer_addr.sun_family == AF_UNIX) 
+				unlink(peer_addr.sun_path);
+		}
     close(sock->fd);
     sock->fd = 0;
   }
