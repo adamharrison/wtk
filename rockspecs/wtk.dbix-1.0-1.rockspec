@@ -16,6 +16,6 @@ source = {
 build = {
    type = "builtin",
    modules = {
-      { ["wtk.dbix"] = "dbix.lua" }
+      ["wtk.dbix"] = "dbix.lua"
    }
 }
