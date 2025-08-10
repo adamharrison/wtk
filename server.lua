@@ -103,8 +103,10 @@ function Request:parse_headers()
     local packet = self.client:read(PACKET_SIZE)
     if packet then
       table.insert(self.buffer, packet)
-    else
+    elseif #self.buffer > 0 then
       error({ code = 500, message = "Client unexpectedly closed connection.", verbose = true })
+    else
+      return nil
     end
   end
   local headers, remainder
@@ -319,8 +321,10 @@ function Server:accept()
         local request
         xpcall(function()
           request = Request.new(client):parse_headers()
-          self:accepted(client, request)
-          if not request.responded then error({ code = 404 }) end
+          if request then
+            self:accepted(client, request)
+            if not request.responded then error({ code = 404 }) end
+          end
         end, function(err)
           self:error_handler(request, err, client)
         end)
@@ -380,6 +384,7 @@ function Server.log:log(type, message, ...) io.stdout:write(string.format("[%5s]
 function Server.log:verbose(message, ...) if self._verbose then self:log("VERB", message, ...) end end
 function Server.log:info(message, ...) self:log("INFO", message, ...) end
 function Server.log:error(message, ...) self:log("ERROR", message, ...) end
+function Server.log:warn(message, ...) self:log("WARN", message, ...) end
 
 function Server:hot_reload(loop, file, options)
   if not system.mtime(file) then return self.log:warn("Can't find " .. file .. ", so cannot hot reload.") end
