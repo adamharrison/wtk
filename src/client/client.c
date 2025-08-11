@@ -77,6 +77,13 @@ typedef enum {
   REQUEST_STATE_ERROR
 } request_type_e;
 
+typedef enum {
+  REQUEST_RESULT_ERROR       = -1,
+  REQUEST_RESULT_PROGRESS    = 0,
+  REQUEST_RESULT_READ_BLOCK  = 1,
+  REQUEST_RESULT_WRITE_BLOCK = 2
+} request_result_e;
+
 typedef struct request_t {
   connection_t* connection;
   char chunk[MAX_REQUEST_HEADER_SIZE];
@@ -175,7 +182,7 @@ static int request_socket_fd(request_t* request) {
   return request->connection->net_context.fd;
 }
 
-static int check_request(request_t* request);
+static request_result_e check_request(request_t* request);
 static int client_requestk(lua_State* L, int status, lua_KContext ctx) {
   int request_response_table_index;
   if (ctx) // Coroutine.
@@ -185,8 +192,9 @@ static int client_requestk(lua_State* L, int status, lua_KContext ctx) {
   luaL_checktype(L, -1, LUA_TLIGHTUSERDATA);
   int has_error = 0;
   request_t* request = (request_t*)lua_touserdata(L, -1);
+  request_result_e request_result = REQUEST_RESULT_ERROR;
   do {
-    while (check_request(request) == 1);
+    request_result = check_request(request);
     switch (request->state) {
       case REQUEST_STATE_SEND_BODY: {
         int spare_room = min(sizeof(request->chunk) - request->chunk_length, request->body_length - request->body_transmitted);
@@ -409,7 +417,7 @@ static int client_requestk(lua_State* L, int status, lua_KContext ctx) {
     }
     if (!ctx)
       usleep(1000);
-  } while (!ctx && request->state != REQUEST_STATE_RECV_COMPLETE && request->state != REQUEST_STATE_ERROR);
+  } while ((!ctx || (request_result != REQUEST_RESULT_READ_BLOCK && request_result != REQUEST_RESULT_WRITE_BLOCK)) && request->state != REQUEST_STATE_RECV_COMPLETE && request->state != REQUEST_STATE_ERROR);
   if (request->state == REQUEST_STATE_RECV_COMPLETE) {
     request_complete(request);
     lua_getfield(L, request_response_table_index, TRANSIENT_RESPONSE_KEY);
@@ -427,6 +435,11 @@ static int client_requestk(lua_State* L, int status, lua_KContext ctx) {
     lua_pushliteral(L, "socket");
     lua_pushinteger(L, request_socket_fd(request));
     lua_rawset(L, 3);
+    if (request_result == REQUEST_RESULT_READ_BLOCK || request_result == REQUEST_RESULT_WRITE_BLOCK) {
+      lua_pushliteral(L, "type");
+      lua_pushstring(L, request_result == REQUEST_RESULT_WRITE_BLOCK ? "write" : "read");
+      lua_rawset(L, 3);
+    }
     lua_replace(L, 1);
     lua_settop(L, 1);
     lua_yieldk(L, 1, ctx, client_requestk);
@@ -576,7 +589,6 @@ static int f_client_request(lua_State* L) {
     connection->socket = -1;
     connection->is_ssl = strcmp(protocol, "https") == 0;
     connection->is_open = 0;
-    connection->last_activity = time(NULL);
     connection->active = NULL;
   } else {
     luaL_checktype(L, -1, LUA_TUSERDATA);
@@ -589,6 +601,7 @@ static int f_client_request(lua_State* L) {
       return luaL_error(L, "supplied connection is connected over port %d; trying to connect on port %d.", connection->port, port);
   }
   lua_setfield(L, 1, "connection");
+  connection->last_activity = time(NULL);
 
   lua_pushlightuserdata(L, request_create(connection, header, header_offset, preset_content_length, max_timeout, verbose));
   lua_setfield(L, 1, "request");
@@ -620,15 +633,33 @@ static int mbedtls_snprintf(int mbedtls, char* buffer, int len, int status, cons
   return strlen(buffer);
 }
 
-static int request_socket_write(request_t* request, const char* buf, int len) {
-  return request->connection->is_ssl ? mbedtls_ssl_write(&request->connection->ssl_context, (const unsigned char*)buf, len) : write(request->connection->socket, buf, len);
+static int request_socket_write(request_t* request, const char* buf, int len, request_result_e* blocking_type) {
+  if (request->connection->is_ssl) {
+    int written = mbedtls_ssl_write(&request->connection->ssl_context, (const unsigned char*)buf, len);
+    if (written == MBEDTLS_ERR_SSL_WANT_WRITE || written == MBEDTLS_ERR_SSL_WANT_READ) {
+      if (blocking_type)
+        *blocking_type = written == MBEDTLS_ERR_SSL_WANT_READ ? REQUEST_RESULT_READ_BLOCK : REQUEST_RESULT_WRITE_BLOCK;
+    }
+    return written;
+  } else {
+    int written = write(request->connection->socket, buf, len);
+    if (written == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+      if (blocking_type)
+        *blocking_type = REQUEST_RESULT_WRITE_BLOCK;
+      return 0;
+    }
+    return written;
+  }
 }
 
-static int request_socket_read(request_t* request, char* buf, int len) {
+static int request_socket_read(request_t* request, char* buf, int len, request_result_e* blocking_type) {
   if (request->connection->is_ssl) {
     int recvd = mbedtls_ssl_read(&request->connection->ssl_context, (unsigned char*)buf, len);
-    if (recvd == MBEDTLS_ERR_SSL_WANT_READ || recvd == MBEDTLS_ERR_SSL_WANT_WRITE)
+    if (recvd == MBEDTLS_ERR_SSL_WANT_READ || recvd == MBEDTLS_ERR_SSL_WANT_WRITE) {
+      if (blocking_type)
+        *blocking_type = recvd == MBEDTLS_ERR_SSL_WANT_WRITE ? REQUEST_RESULT_WRITE_BLOCK : REQUEST_RESULT_READ_BLOCK;
       return 0;
+    }
     if (recvd == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY)
       return SOCKET_STATUS_RESET;
     return recvd;
@@ -636,14 +667,20 @@ static int request_socket_read(request_t* request, char* buf, int len) {
     int recvd = read(request->connection->socket, buf, len);
     if (recvd == -1 && errno == ECONNRESET)
       return SOCKET_STATUS_RESET;
-    if (recvd == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
+    if (recvd == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+      if (blocking_type)
+        *blocking_type = REQUEST_RESULT_READ_BLOCK;
       return 0;
+    }
     return recvd;
   }
 }
 
-// returns 0 in the case of yielding, -1 in error, 1 for progress made
-static int check_request(request_t* request) {
+static request_result_e check_request(request_t* request) {
+  if (time(NULL) - request->connection->last_activity > request->timeout_length && request->state != REQUEST_STATE_ERROR && request->state != REQUEST_STATE_RECV_COMPLETE) {
+    request->state = REQUEST_STATE_ERROR;
+    request->chunk_length = snprintf(request->chunk, sizeof(request->chunk), "%s", "request timed out");
+  }
   switch (request->state) {
     case REQUEST_STATE_INIT_CONNECTION: {
       char err[MAX_ERROR_SIZE] = {0};
@@ -653,7 +690,7 @@ static int check_request(request_t* request) {
         break;
       if (request->connection->is_open && time(NULL) - request->connection->last_activity < MAX_IDLE_TIME) {
         request->state = REQUEST_STATE_SEND_HEADERS;
-        break;
+        return REQUEST_RESULT_PROGRESS;
       }
       close_connection(request->connection);
       if (request->connection->is_ssl) {
@@ -722,8 +759,10 @@ static int check_request(request_t* request) {
     case REQUEST_STATE_HANDHSAKE: {
       char err[MAX_ERROR_SIZE] = {0};
       int status = mbedtls_ssl_handshake(&request->connection->ssl_context);
-      if (status == MBEDTLS_ERR_SSL_WANT_READ || status == MBEDTLS_ERR_SSL_WANT_WRITE)
-        break;
+      if (status == MBEDTLS_ERR_SSL_WANT_READ)
+        return REQUEST_RESULT_READ_BLOCK;
+      if (status == MBEDTLS_ERR_SSL_WANT_WRITE)
+        return REQUEST_RESULT_WRITE_BLOCK;
       if (status != 0) {
         mbedtls_snprintf(1, err, sizeof(err), status, "can't handshake with %s", request->connection->hostname); goto cleanup;
       } else if (((status = mbedtls_ssl_get_verify_result(&request->connection->ssl_context)) != 0) && !no_verify_ssl) {
@@ -735,7 +774,8 @@ static int check_request(request_t* request) {
     case REQUEST_STATE_SEND_HEADERS:
     case REQUEST_STATE_SEND_BODY:
       if (request->chunk_length > 0) {
-        int bytes_written = request_socket_write(request, request->chunk, request->chunk_length);
+        request_result_e blocking_type;
+        int bytes_written = request_socket_write(request, request->chunk, request->chunk_length, &blocking_type);
         if (bytes_written < 0) {
           // In the case where the connection was simply terminated, head back to top, and try to reopen it.
           if (request->state == REQUEST_STATE_SEND_HEADERS && errno == ECONNRESET) {
@@ -745,7 +785,7 @@ static int check_request(request_t* request) {
             request->state = REQUEST_STATE_ERROR;
             request->chunk_length = mbedtls_snprintf(request->connection->is_ssl, request->chunk, sizeof(request->chunk), bytes_written, "%s", "error sending headers or body");
           }
-          return -1;
+          break;
         }
         if (bytes_written == request->chunk_length) {
           if (request->verbose == 2)
@@ -768,13 +808,13 @@ static int check_request(request_t* request) {
         if (request->state == REQUEST_STATE_SEND_BODY && request->body_transmitted == request->body_length) {
           request->state = REQUEST_STATE_RECV_HEADERS;
           request->body_transmitted = 0;
-          return 1;
-        } else if (bytes_written > 0)
-          return 1;
+        } else if (bytes_written == 0)
+          return blocking_type;
       }
     break;
     case REQUEST_STATE_RECV_HEADERS: {
-      int bytes_read = request_socket_read(request, &request->chunk[request->chunk_length], sizeof(request->chunk) - request->chunk_length);
+      request_result_e blocking_type;
+      int bytes_read = request_socket_read(request, &request->chunk[request->chunk_length], sizeof(request->chunk) - request->chunk_length, &blocking_type);
       if (bytes_read < 0) {
         request->state = REQUEST_STATE_ERROR;
         request->chunk_length = mbedtls_snprintf(request->connection->is_ssl, request->chunk, sizeof(request->chunk), bytes_read, "%s", "error receiving headers");
@@ -786,12 +826,13 @@ static int check_request(request_t* request) {
         const char* boundary = strstr(request->chunk, "\r\n\r\n");
         if (boundary)
           request->state = REQUEST_STATE_RECV_PROCESS_HEADERS;
-        return 1;
-      }
+      } else
+        return blocking_type;
     } break;
-    case REQUEST_STATE_RECV_BODY:
+    case REQUEST_STATE_RECV_BODY: {
       if (sizeof(request->chunk) - request->chunk_length > 0) {
-        int bytes_read = request_socket_read(request, &request->chunk[request->chunk_length], sizeof(request->chunk) - request->chunk_length);
+        request_result_e blocking_type;
+        int bytes_read = request_socket_read(request, &request->chunk[request->chunk_length], sizeof(request->chunk) - request->chunk_length, &blocking_type);
         if (bytes_read < 0) {
           if (request->body_length == -1 && bytes_read == SOCKET_STATUS_RESET) {
             request->state == REQUEST_STATE_RECV_BODY_COMPLETE;
@@ -804,20 +845,16 @@ static int check_request(request_t* request) {
             write(fileno(stderr), &request->chunk[request->chunk_length], bytes_read);
           request->connection->last_activity = time(NULL);
           request->chunk_length += bytes_read;
-          return 1;
-        }
+        } else
+          return blocking_type;
       }
-    break;
+    } break;
     case REQUEST_STATE_RECV_PROCESS_HEADERS: break;
     case REQUEST_STATE_RECV_BODY_COMPLETE: break;
     case REQUEST_STATE_RECV_COMPLETE: break;
     case REQUEST_STATE_ERROR: break;
   }
-  if (time(NULL) - request->connection->last_activity > request->timeout_length && request->state != REQUEST_STATE_ERROR && request->state != REQUEST_STATE_RECV_COMPLETE) {
-    request->state = REQUEST_STATE_ERROR;
-    request->chunk_length = snprintf(request->chunk, sizeof(request->chunk), "%s", "request timed out");
-  }
-  return request->state != REQUEST_STATE_ERROR ? 0 : -1;
+  return request->state != REQUEST_STATE_ERROR ? REQUEST_RESULT_PROGRESS : REQUEST_RESULT_ERROR;
 }
 
 static void client_tls_debug(void *ctx, int level, const char *file, int line, const char *str) {
