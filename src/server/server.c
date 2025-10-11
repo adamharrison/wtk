@@ -12,6 +12,7 @@
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 
 
@@ -270,7 +271,7 @@ static int f_loop_add(lua_State* L) {
 			mask |= EPOLLOUT;
 	} else
 		mask |= EPOLLIN;
-	if (lua_isboolean(L, 5) && lua_toboolean(L, 5))
+	if (lua_isboolean(L, 5))
 		mask |= EPOLLET;
 	int fd = lua_tofd(L, 2);
 	lua_getfield(L, 1, "epollfd");
@@ -361,8 +362,16 @@ static int f_system_mtime(lua_State* L) {
   return 1;
 }
 
+static int f_system_time(lua_State* L) {
+	struct timeval tv;
+	gettimeofday(&tv, NULL);
+	lua_pushnumber(L, (double)tv.tv_sec + tv.tv_usec / 1000000.0);
+  return 1;
+}
+
 static const luaL_Reg system_lib[] = {
   { "mtime",    f_system_mtime  },
+  { "time",     f_system_time   },
   { NULL,       NULL }
 };
 
@@ -534,6 +543,7 @@ static int f_socket_send(lua_State* L) {
 	}
   return 2;
 }
+
 
 static const luaL_Reg socket_lib[] = {
   { "bind",      f_socket_bind   },

@@ -328,10 +328,12 @@ function resultset:merge_results(rows)
       local offset = self:offset_of_prefetch(relationship)
       local records = map(rows, function(row)
         local values = {}
+        local all_nil = true
         for j = offset, offset + (#relationship.foreign_table.columns - 1) do
+          if row._row[j] ~= nil then all_nil = false end
           values[j - offset + 1] = row._row[j]
         end
-        return result.new(self._connection, relationship.foreign_table, values)
+        return not all_nil and result.new(self._connection, relationship.foreign_table, values) or nil
       end)
       local last_primary_key = nil
       local total_records = {}

@@ -70,7 +70,7 @@ function Response:write(client)
   if client.closed then return end
   local parts = { string.format("%s %d %s\r\n", "HTTP/1.1", self.code, client.server.codes[self.code]) }
   if self.body and type(self.body) ~= 'function' and not self.headers['content-length'] then self.headers['content-length'] = #self.body end
-  if not self.headers['connection'] then self.headers['connection'] = 'keep-alive' end
+  if not self.headers['connection'] or self.headers['connection']:find("^%s*%") then self.headers['connection'] = 'keep-alive' end
   for key,value in pairs(self.headers) do table.insert(parts, string.format("%s: %s\r\n", key, value)) end
   table.insert(parts, "\r\n")
   client:write_block(table.concat(parts))
@@ -380,7 +380,7 @@ function Server:put(path, func) return self:route("PUT", path, func) end
 function Server:delete(path, func) return self:route("DELETE", path, func) end
 
 Server.log = {}
-function Server.log:log(type, message, ...) io.stdout:write(string.format("[%5s][%s]: " .. message .. "\n", type, os.date("%Y-%m-%dT%H:%M:%S"), ...)):flush() end
+function Server.log:log(type, message, ...) io.stdout:write(string.format("[%5s][%s.%03d]: " .. message .. "\n", type, os.date("%Y-%m-%dT%H:%M:%S"), (math.floor(system.time() * 1000.0) % 1000), ...)):flush() end
 function Server.log:verbose(message, ...) if self._verbose then self:log("VERB", message, ...) end end
 function Server.log:info(message, ...) self:log("INFO", message, ...) end
 function Server.log:error(message, ...) self:log("ERROR", message, ...) end
