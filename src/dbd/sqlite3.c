@@ -110,7 +110,7 @@ static int f_sqlite3_query(lua_State* L) {
   int res = sqlite3_prepare_v2(sqlite->db, statement, statement_length, &stmt, NULL);
   if (res != SQLITE_OK) {
     lua_pushnil(L);
-    lua_pushstring(L, sqlite3_errstr(res));
+    lua_pushstring(L, sqlite3_errmsg(sqlite->db));
     return 2;
   }
   sqlite3_result_t* result = lua_newuserdata(L, sizeof(sqlite3_result_t));
@@ -121,7 +121,6 @@ static int f_sqlite3_query(lua_State* L) {
   result->columns = sqlite3_column_count(stmt);
   lua_getfield(L, 1, "__sqlite3_result");
   lua_setmetatable(L, -2);
-  
   if (lua_type(L, 3) == LUA_TTABLE) {
     size_t length = lua_rawlen(L, 3);
     for (size_t i = 1; i <= length; ++i) {
@@ -155,7 +154,7 @@ static int f_sqlite3_query(lua_State* L) {
       }
       if (res != SQLITE_OK) {
         lua_pushnil(L);
-        lua_pushstring(L, sqlite3_errstr(res));
+        lua_pushstring(L, sqlite3_errmsg(sqlite->db));
         return 2;
       }
       lua_pop(L, 1);
