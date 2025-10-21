@@ -153,6 +153,9 @@
    callbacks to the zlib and archive API's, and a few stand-alone helper API's which don't provide custom user
    functions (such as tdefl_compress_mem_to_heap() and tinfl_decompress_mem_to_heap()) won't work. */
 /*#define MINIZ_NO_MALLOC */
+#define MINIZ_NO_ARCHIVE_APIS
+#define MINIZ_NO_ARCHIVE_WRITING_APIS
+#define MINIZ_NO_ZLIB_COMPATIBLE_NAMES
 
 #ifdef MINIZ_NO_INFLATE_APIS
 #define MINIZ_NO_ARCHIVE_APIS
