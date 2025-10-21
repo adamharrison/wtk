@@ -9416,7 +9416,7 @@ static int f_z_deflate(lua_State* L) {
     size_t length;
     const char* packet = luaL_checklstring(L, 1, &length);
     int level = 1;
-    int chunk_size = 8192;
+    int chunk_size = 32*1024;
     if (lua_type(L, 2) == LUA_TTABLE) {
         lua_getfield(L, 2, "level");
         if (!lua_isnil(L, -1))
@@ -9432,18 +9432,21 @@ static int f_z_deflate(lua_State* L) {
     luaL_Buffer buffer;
     luaL_buffinit(L, &buffer);
     char compression_buffer[chunk_size];
-    while (stream.total_in < length) {
+    while (1) {
+        int left = length - stream.total_in;
         stream.next_in = &packet[stream.total_in];
         stream.avail_in = length - stream.total_in;
         stream.next_out = compression_buffer;
         stream.avail_out = chunk_size;
-        mz_deflate(&stream, MZ_NO_FLUSH);
+        int err = mz_deflate(&stream, left ? MZ_NO_FLUSH : MZ_FINISH);
+        if (err != MZ_OK && err != MZ_STREAM_END) {
+            mz_deflateEnd(&stream);
+            return luaL_error(L, "error delating stream: %s", mz_error(err));
+        }
         luaL_addlstring(&buffer, compression_buffer, chunk_size - stream.avail_out);
+        if (err == MZ_STREAM_END && !stream.avail_in && stream.avail_out)
+            break;
     }
-    stream.next_out = compression_buffer;
-    stream.avail_out = chunk_size;
-    mz_deflate(&stream, MZ_FINISH);
-    luaL_addlstring(&buffer, compression_buffer, chunk_size - stream.avail_out);
     mz_deflateEnd(&stream);
     luaL_pushresult(&buffer);
     return 1;
@@ -9464,19 +9467,22 @@ static int f_z_inflate(lua_State* L) {
     luaL_Buffer buffer;
     luaL_buffinit(L, &buffer);
     char compression_buffer[chunk_size];
-    while (stream.total_in < length) {
+    while (1) {
+        int left = length - stream.total_in;
         stream.next_in = &packet[stream.total_in];
         stream.avail_in = length - stream.total_in;
         stream.next_out = compression_buffer;
         stream.avail_out = chunk_size;
-        mz_inflate(&stream, MZ_PARTIAL_FLUSH);
+        int err = mz_inflate(&stream, left ? MZ_NO_FLUSH : MZ_FINISH);
+        if (err != MZ_OK && err != MZ_STREAM_END) {
+            mz_inflateEnd(&stream);
+            return luaL_error(L, "error delating stream: %s", mz_error(err));
+        }
         luaL_addlstring(&buffer, compression_buffer, chunk_size - stream.avail_out);
+        if (err == MZ_STREAM_END && !stream.avail_in && stream.avail_out)
+            break;
     }
-    stream.next_out = compression_buffer;
-    stream.avail_out = chunk_size;
-    mz_deflate(&stream, MZ_FINISH);
-    luaL_addlstring(&buffer, compression_buffer, chunk_size - stream.avail_out);
-    mz_deflateEnd(&stream);
+    mz_inflateEnd(&stream);
     luaL_pushresult(&buffer);
     return 1;
 }
