@@ -78,7 +78,17 @@ function schema:table(t)
   return self.tables[#self.tables]
 end
 function stable:add_column(c) table.insert(self.columns, c) end
-function stable:belongs_to(t, name, self_columns, foreign_columns) table.insert(self.relationships, { name = name or t.singular, type = "belongs_to", self_columns = self_columns or { t.singular .. "_id" }, foreign_table = t, foreign_columns = columns or { "id" } }) end
+function stable:belongs_to(t, name, self_columns, foreign_columns) 
+  -- if we can have a NULL in at least one of our columns, thent his becomes a might_belong relationship
+  self_columns = self_columns or { t.singular .. "_id" }
+  table.insert(self.relationships, { 
+    name = name or t.singular,
+    type = #grep(self_columns, function(s) return not self.columns[s].not_null end) > 0 and "might_belong" or "belongs_to",
+    self_columns = self_columns,
+    foreign_table = t,
+    foreign_columns = columns or { "id" } 
+  }) 
+end
 function stable:has_many(t, name, self_columns, foreign_columns) table.insert(self.relationships, { name = name or t.plural, type = "has_many", self_columns = self_columns or { "id" }, foreign_table = t, foreign_columns = columns or { self.singular .. "_id" } }) end
 function stable:has_one(t, name, self_columns, foreign_columns) table.insert(self.relationships, { name = name or t.plural, type = "has_one", self_columns = self_columns or { "id" }, foreign_table = t, foreign_columns = columns or { self.singular .. "_id" } }) end
 
@@ -179,7 +189,7 @@ function cschema:deploy_statements(options)
   if self._connection._options.foreign_keys ~= false and options.foreign_keys == false then
     for _, t in ipairs(self._schema.tables) do
       for _, relationship in ipairs(t.relationships) do
-        if relationship.type == "belongs_to" then
+        if relationship.type == "belongs_to" or relationship.type == "might_belong" then
           table.insert(statements, string.format("ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY(%s) REFERENCES %s(%s)",
             self:escape(t.name),
             self:escape("fk_" .. relationship.name),
@@ -317,7 +327,7 @@ end
 function resultset:merge_results(rows)
   if #rows == 0 then return nil end
   for i, relationship in ipairs(self._prefetch) do
-    if relationship.type == "belongs_to" or relationship.type == "has_one" then  
+    if relationship.type == "belongs_to" or relationship.type == "might_belong" or relationship.type == "has_one" then  
       local offset = self:offset_of_prefetch(relationship)
       local values = {}
       for j = offset, offset + #relationship.foreign_table.columns do
@@ -597,7 +607,7 @@ function resultset:as_sql(as_count)
   statement = statement .. " FROM " .. self._connection:escape(self._table.name) .. " " .. self._connection:escape("me")
   if self._prefetch and #self._prefetch > 0 then
     for i,v in ipairs(self._prefetch) do
-      local join_type = v.type == "has_many" and "LEFT JOIN" or "JOIN"
+      local join_type = (v.type == "has_many" or v.type == "might_belong") and "LEFT JOIN" or "JOIN"
       statement = statement .. " " .. join_type .. " " .. self._connection:escape(v.foreign_table.name) .. " " .. self._connection:escape(v.name) .. " ON " .. table.concat(map(v.self_columns, function(sc, i) 
         return self._connection:escape("me", sc) .. " = " .. self._connection:escape(v.name, v.foreign_columns[i])
       end), " AND ")
