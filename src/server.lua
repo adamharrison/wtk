@@ -69,7 +69,7 @@ function Response.new(code, headers, body) return setmetatable({ code = code, he
 function Response:write(client)
   if client.closed then return end
   local parts = { string.format("%s %d %s\r\n", "HTTP/1.1", self.code, client.server.codes[self.code]) }
-  if self.body and type(self.body) ~= 'function' and not self.headers['content-length'] then self.headers['content-length'] = #self.body end
+  if self.body and type(self.body) == 'string' and not self.headers['content-length'] then self.headers['content-length'] = #self.body end
   if not self.headers['connection'] or self.headers['connection']:find("^%s*%") then self.headers['connection'] = 'keep-alive' end
   for key,value in pairs(self.headers) do table.insert(parts, string.format("%s: %s\r\n", key, value)) end
   table.insert(parts, "\r\n")
@@ -83,6 +83,7 @@ function Response:write(client)
       client:write_block(self.body)
     end
   end
+  if not self.headers['content-length'] then client:close() end
   if client.server.verbose then
     if self.code >= 300 and self.code < 400 then
       client.server.log:verbose("RES %s %s %s", self.code, client.peer, self.headers.location)
@@ -266,9 +267,9 @@ function Client:process()
         self.waiting = nil 
         self.waiting_type = nil
       end
-      if not self.waiting and (result.socket or result.waiting) then
+      if not self.waiting and (result.socket or result.fd or result.waiting) then
         self.waiting_type = result.type or "read"
-        self.waiting = self.server.loop:add(result.socket or timer.new(result.timeout), function() 
+        self.waiting = self.server.loop:add(result.socket or result.fd or timer.new(result.timeout), function() 
           self:process() 
         end, self.waiting_type, result.edge)
       end
@@ -281,7 +282,7 @@ function Client:process()
 end
 
 function Server.new(t) 
-  t.socket = assert(socket.bind(t.host or "0.0.0.0", t.port or 80), "unable to bind")
+  t.socket = assert(socket.bind(t.host or "0.0.0.0", t.port or (t.debug and 8080 or 80)), "unable to bind")
   t.mimes = { ["jpeg"] = "image/jpeg", ["jpg"] = "image/jpeg", ["png"] = "image/png", ["gif"] = "image/gif", ["js"] = "text/javascript", ["html"] = "text/html", ["css"] = "text/css", ["txt"] = "text/plain" }
   t.codes = { [101] = "Switching Protocols", [200] = "OK", [201] = "Created", [204] = "No Content", [301] = "Moved Permanently", [302] = "Found", [400] = "Bad Request", [403] = "Forbidden", [404] = "Not Found", [500] = "Internal Server Error" }
   t.routes = { GET = { }, POST = { }, PUT = { }, DELETE = { } }
@@ -301,7 +302,7 @@ function Server:error_handler(request, err, client)
     local msg = string.format("%d Error", err.code)
     if err.message then msg = msg .. ": " .. err.message end
     if self.verbose or not err.verbose then self.log:error(self.verbose and debug.traceback(msg, 3) or msg) end
-    if request and not request.responded then request:respond(err.code, { ["Content-Type"] = "text/plain; charset=UTF-8" }, err.code .. " " .. self.codes[err.code] .. "\n") end
+    if request and not request.responded then request:respond(err.code, { ["Content-Type"] = "text/plain; charset=UTF-8" }, (err.message or (err.code .. " " .. self.codes[err.code])) .. "\n") end
   else
     local msg = string.format("Unhandled Error: %s", err) 
     if self.verbose then self.log:error(debug.traceback(msg, 3)) else self.log:error(msg) end
@@ -400,6 +401,16 @@ function Server:hot_reload(loop, file, options)
       old_modified = system.mtime(file)
     end
   end)
+end
+
+-- loop:add(0, function() server:console() end)
+function Server:console()
+  local line = io.stdin:read("*line")
+  if not line then return false end
+  if line == "quit" then os.exit(0) end
+  local f, err = load(line, "=CLI")
+  if f then _, err = pcall(f) end
+  if err then self.log:error(err) end
 end
 
 function Server.escapeURI(param) return param:gsub("[^A-Za-z0-9%-_%.%!~%*'%(%)]", function(e) return string.format("%%%02x", e:byte(1)) end) end

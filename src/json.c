@@ -1146,17 +1146,16 @@ static void json_append_object(lua_State *l, json_config_t *cfg,
 {
     int comma, keytype;
 
-    /* Object */
-    strbuf_append_char(json, '{');
-
     lua_pushnil(l);
     /* table, startkey */
     comma = 0;
     while (lua_next(l, -2) != 0) {
         if (comma)
             strbuf_append_char(json, ',');
-        else
+        else {
+            strbuf_append_char(json, '{');
             comma = 1;
+        }
 
         /* table, key, value */
         keytype = lua_type(l, -2);
@@ -1178,8 +1177,12 @@ static void json_append_object(lua_State *l, json_config_t *cfg,
         lua_pop(l, 1);
         /* table, key */
     }
-
-    strbuf_append_char(json, '}');
+    if (!comma) {
+        strbuf_append_char(json, '[');
+        strbuf_append_char(json, ']');
+    } else {
+        strbuf_append_char(json, '}');
+    }
 }
 
 /* Serialise Lua data into JSON string. */
@@ -1901,6 +1904,8 @@ static int lua_cjson_new(lua_State *l)
     lua_setfield(l, -2, "null");
     lua_pushlightuserdata(l, (void*)1);
     lua_setfield(l, -2, "empty_array");
+    lua_pushlightuserdata(l, (void*)2);
+    lua_setfield(l, -2, "empty_object");
 
     /* Set module name / version fields */
     lua_pushliteral(l, CJSON_MODNAME);

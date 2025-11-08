@@ -411,6 +411,7 @@ static int f_socket_bind(lua_State *L) {
   struct sockaddr_un un_bind_addr = {0};
   size_t addr_len = 0;
   socket_t* sock = lua_newobject(L, socket);
+  memset(sock, 0, sizeof(socket_t));
   const char* host = luaL_checkstring(L, 1);
   if (strncmp(host, "unix://", 7) == 0) {
 		sock->fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
