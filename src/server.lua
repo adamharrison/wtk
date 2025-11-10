@@ -114,7 +114,19 @@ function Request:parse_headers()
   self.method, self.path, self.version, headers, remainder = table.concat(self.buffer):match("^(%S+) (%S+) (%S+)\r\n(.-\r\n)\r\n(.*)$")
   self.params, self.path, self.search = {}, self.path:match("^([^?]+)(%??[^?]*)$")
   assert(self.method and self.path, "malformed request")
-  if self.search then for key,value in self.search:gmatch("([^=&%?]+)=([^&]+)") do self.params[key] = value:gsub("%%([a-fA-F0-9][a-fA-F0-9])", function(e) return string.char(tonumber(e, 16)) end) end end
+  if self.search then 
+    for key,value in self.search:gmatch("([^=&%?]+)=([^&]+)") do 
+      value = value:gsub("%%([a-fA-F0-9][a-fA-F0-9])", function(e) return string.char(tonumber(e, 16)) end) 
+      if self.params[key] then 
+        if type(self.params[key]) ~= 'table' then
+          self.params[key] = { self.params[key] }
+        end
+        table.insert(self.params[key], value)
+      else
+        self.params[key] = value
+      end
+    end
+  end
   for key,value in headers:gmatch("([^%:]+):%s*(.-)\r\n") do self.headers[key:lower()] = value end
   for key,value in (self.headers.cookie or ""):gmatch("([^=]+)=([^;]+)") do self.cookies[key] = value:gsub("%%([a-fA-F0-9][a-fA-F0-9])", function(e) return string.char(tonumber(e, 16)) end) end
   if #remainder > 0 then self.client.buffer = remainder end
@@ -283,7 +295,7 @@ end
 
 function Server.new(t) 
   t.socket = assert(socket.bind(t.host or "0.0.0.0", t.port or (t.debug and 8080 or 80)), "unable to bind")
-  t.mimes = { ["jpeg"] = "image/jpeg", ["jpg"] = "image/jpeg", ["png"] = "image/png", ["gif"] = "image/gif", ["js"] = "text/javascript", ["html"] = "text/html", ["css"] = "text/css", ["txt"] = "text/plain" }
+  t.mimes = { ["svg"] = "image/svg+xml", ["jpeg"] = "image/jpeg", ["jpg"] = "image/jpeg", ["png"] = "image/png", ["gif"] = "image/gif", ["js"] = "text/javascript", ["html"] = "text/html", ["css"] = "text/css", ["txt"] = "text/plain" }
   t.codes = { [101] = "Switching Protocols", [200] = "OK", [201] = "Created", [204] = "No Content", [301] = "Moved Permanently", [302] = "Found", [400] = "Bad Request", [403] = "Forbidden", [404] = "Not Found", [500] = "Internal Server Error" }
   t.routes = { GET = { }, POST = { }, PUT = { }, DELETE = { } }
   local self = setmetatable(t, Server) 
