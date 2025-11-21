@@ -33,7 +33,7 @@
 #include <lauxlib.h>
 #include <lualib.h>
 
-#define MAX_REQUEST_HEADER_SIZE 4096 // This is also the max chunk size.
+#define MAX_REQUEST_HEADER_SIZE 8*4096 // This is also the max chunk size.
 #define MAX_PATH_SIZE 1024
 #define MAX_HOSTNAME_SIZE 256
 #define MAX_PROTOCOL_SIZE 6
@@ -826,6 +826,10 @@ static request_result_e check_request(request_t* request) {
         const char* boundary = strstr(request->chunk, "\r\n\r\n");
         if (boundary)
           request->state = REQUEST_STATE_RECV_PROCESS_HEADERS;
+        else if (request->chunk_length >= sizeof(request->chunk)) {
+          request->state = REQUEST_STATE_ERROR;
+          request->chunk_length = snprintf(request->chunk, sizeof(request->chunk), "reponse header received from %s too large", request->connection->hostname); 
+        }
       } else
         return blocking_type;
     } break;

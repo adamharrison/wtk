@@ -181,7 +181,7 @@ static int f_proc_status(lua_State* L) {
     int status;
     if (waitpid(pid, &status, wait ? 0 : WNOHANG) == 0)
         return 0;
-    lua_pushinteger(L, status);
+    lua_pushinteger(L, WEXITSTATUS(status));
     return 1;
 }
 
@@ -238,7 +238,7 @@ int luaopen_wtk_proc(lua_State* L) {
         local yieldable = coroutine.isyieldable()\n\
         if type(target) == 'number' then \n\
             local bytes = self.buffer\n\
-            if target > #self.buffer then self.buffer = self.buffer .. (self:__read(target - #self.buffer, not yieldable) or '') end\n\
+            if target > #self.buffer then self.buffer = self.buffer .. (self:__read(target - #self.buffer) or '') end\n\
             self.buffer = bytes:sub(target)\n\
             return bytes:sub(1, target)\n\
         else\n\

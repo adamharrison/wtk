@@ -99,6 +99,21 @@ Request.__index = Request
 function Request.new(client) 
   return setmetatable({ method = nil, client = client, path = nil, version = nil, headers = {}, buffer = {}, cookies = {}, responded = false, length_read = 0 }, Request) 
 end
+function Request:parse_form(form)
+  local params = {}
+  for key,value in form:gmatch("([^=&%?]+)=([^&]+)") do 
+    value = value:gsub("%%([a-fA-F0-9][a-fA-F0-9])", function(e) return string.char(tonumber(e, 16)) end) 
+    if params[key] then 
+      if type(params[key]) ~= 'table' then
+        params[key] = { params[key] }
+      end
+      table.insert(params[key], value)
+    else
+      params[key] = value
+    end
+  end
+  return params
+end
 function Request:parse_headers()
   while #self.buffer == 0 or not self.buffer[#self.buffer]:find("\r\n\r\n") do
     local packet = self.client:read(PACKET_SIZE)
@@ -114,19 +129,7 @@ function Request:parse_headers()
   self.method, self.path, self.version, headers, remainder = table.concat(self.buffer):match("^(%S+) (%S+) (%S+)\r\n(.-\r\n)\r\n(.*)$")
   self.params, self.path, self.search = {}, self.path:match("^([^?]+)(%??[^?]*)$")
   assert(self.method and self.path, "malformed request")
-  if self.search then 
-    for key,value in self.search:gmatch("([^=&%?]+)=([^&]+)") do 
-      value = value:gsub("%%([a-fA-F0-9][a-fA-F0-9])", function(e) return string.char(tonumber(e, 16)) end) 
-      if self.params[key] then 
-        if type(self.params[key]) ~= 'table' then
-          self.params[key] = { self.params[key] }
-        end
-        table.insert(self.params[key], value)
-      else
-        self.params[key] = value
-      end
-    end
-  end
+  if self.search then self.params = self:parse_form(self.search) end
   for key,value in headers:gmatch("([^%:]+):%s*(.-)\r\n") do self.headers[key:lower()] = value end
   for key,value in (self.headers.cookie or ""):gmatch("([^=]+)=([^;]+)") do self.cookies[key] = value:gsub("%%([a-fA-F0-9][a-fA-F0-9])", function(e) return string.char(tonumber(e, 16)) end) end
   if #remainder > 0 then self.client.buffer = remainder end
@@ -163,7 +166,7 @@ function Request:respond(code, headers, body)
   self.responded = true 
   if not headers['set-cookie'] and self.cookies then 
     local cookies = {}
-    for key,value in pairs(self.cookies) do table.insert(cookies, key .. "=" .. tostring(value):gsub("[%c:/?#%[%]@!$&'\"%(%)*+,;=%%]", function(e) return "%" .. string.format("%02x", e) end)) end
+    for key,value in pairs(self.cookies) do table.insert(cookies, key .. "=" .. tostring(value):gsub("[%c:/?#%[%]@!$&'\"%(%)*+,;=%%]", function(e) return "%" .. string.format("%02x", e:byte(1)) end)) end
     if #cookies > 0 then headers['set-cookie'] = table.concat(cookies, ';') end
   end
   Response.new(code, headers, body):write(self.client) 

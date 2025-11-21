@@ -424,7 +424,7 @@ static int f_socket_bind(lua_State *L) {
 		in_bind_addr.sin_family = AF_INET;
 		in_bind_addr.sin_addr.s_addr = INADDR_ANY;
 		if (inet_aton(host, &in_bind_addr.sin_addr) == 0)
-			return luaL_error(L, "Unable to parse address: %s", strerror(errno));
+			return luaL_error(L, "Unable to parse address: %s", host);
 		in_bind_addr.sin_port = htons(luaL_checkinteger(L, 2));
 		bind_addr = (struct sockaddr*)&in_bind_addr;
 		addr_len = sizeof(in_bind_addr);
