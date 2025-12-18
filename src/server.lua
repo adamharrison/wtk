@@ -66,7 +66,7 @@ end
 local Response = { }
 Response.__index = Response
 function Response.new(code, headers, body) return setmetatable({ code = code, headers = headers or {}, body = body }, Response) end
-function Response:write(client)
+function Response:write_header(client)
   if client.closed then return end
   local parts = { string.format("%s %d %s\r\n", "HTTP/1.1", self.code, client.server.codes[self.code]) }
   if self.body and type(self.body) == 'string' and not self.headers['content-length'] then self.headers['content-length'] = #self.body end
@@ -74,6 +74,10 @@ function Response:write(client)
   for key,value in pairs(self.headers) do table.insert(parts, string.format("%s: %s\r\n", key, value)) end
   table.insert(parts, "\r\n")
   client:write_block(table.concat(parts))
+end
+function Response:write(client)
+  if client.closed then return end
+  self:write_header(client)
   if self.body then 
     if type(self.body) == 'function' then
       for chunk in self.body do
