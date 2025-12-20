@@ -39,7 +39,8 @@ static int no_verify_ssl;
 
 #define MAX_ERROR_SIZE 512
 
-#include "dns.c"
+#define DNS_IMPLEMENTATION
+#include "dns.h"
 
 typedef enum socket_state_e {
   STATE_INIT,
