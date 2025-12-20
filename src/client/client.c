@@ -1,3 +1,4 @@
+#include <netinet/in.h>
 #if _WIN32
   #include <direct.h>
   #include <winsock2.h>
@@ -38,8 +39,12 @@ static int no_verify_ssl;
 
 #define MAX_ERROR_SIZE 512
 
+#include "dns.c"
+
 typedef enum socket_state_e {
   STATE_INIT,
+  STATE_RESOLVING,
+  STATE_CONNECTING,
   STATE_HANDSHAKE,
   STATE_READY,
   STATE_CLOSED
@@ -51,6 +56,8 @@ typedef struct socket_t {
   int blocking;
   socket_state_e state;
   struct sockaddr_in addr;
+  struct dns_addrinfo* ai;
+  struct dns_resolver* resolver;
   mbedtls_net_context net_context;
   mbedtls_ssl_context ssl_context;
   time_t last_activity;
@@ -126,7 +133,7 @@ static int f_socket_recvk(lua_State* L, int status, lua_KContext ctx) {
       return 0;
     }
   } else {
-    recvd = read(socket->fd, buf, sizeof(buf));
+    recvd = read(socket->fd, buf, imin(sizeof(buf), bytes));
     if (recvd == -1 && errno == ECONNRESET) {
       socket->state = STATE_CLOSED;
       return 0;
@@ -167,6 +174,8 @@ static int f_socket_sendk(lua_State* L, int status, lua_KContext ctx) {
 }
 static int f_socket_send(lua_State* L) { return f_socket_sendk(L, 0, 0); }
 
+
+
 static int f_socket_openk(lua_State* L, int status, lua_KContext ctx) {
   lua_getfield(L, 1, "__c");
   socket_t* c = lua_touserdata(L, -1);
@@ -177,45 +186,96 @@ static int f_socket_openk(lua_State* L, int status, lua_KContext ctx) {
   char err[MAX_ERROR_SIZE]={0};
   switch (c->state) {
     case STATE_INIT:
+      struct dns_options options = DNS_OPTS_INIT();
+      struct addrinfo ai_hints = { .ai_family = PF_UNSPEC, .ai_socktype = SOCK_STREAM, .ai_flags = AI_CANONNAME };
+      struct addrinfo *ent;
+      int error = 0;
+      c->resolver = dns_res_stub(&options, &error);
+      if (error) {
+        snprintf(err, sizeof(err), "can't resolve %s: %s", hostname, dns_strerror(error));
+        break;
+      }
+      if (!(c->ai = dns_ai_open(hostname, "80", 0, &ai_hints, c->resolver, &error))) {
+        snprintf(err, sizeof(err), "can't resolve %s: %s", hostname, dns_strerror(error));
+        break;
+      }
+      c->fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
       if (strcmp(protocol, "https") == 0) {
-        int status;
-        char sport[10];
         c->is_ssl = 1;
+        int status;
         mbedtls_ssl_init(&c->ssl_context);
         mbedtls_net_init(&c->net_context);
-        snprintf(sport, sizeof(sport), "%d", port);
-        // https://gist.github.com/Barakat/675c041fd94435b270a25b5881987a30
         if ((status = mbedtls_ssl_setup(&c->ssl_context, &ssl_config)) != 0) {
           mbedtls_snprintf(1, err, sizeof(err), status, "can't set up ssl for %s: %d", hostname, status);
           break;
         }
+        c->net_context.fd = c->fd;
         mbedtls_ssl_set_bio(&c->ssl_context, &c->net_context, mbedtls_net_send, mbedtls_net_recv, NULL);
-        if ((status = mbedtls_net_connect(&c->net_context, hostname, sport, MBEDTLS_NET_PROTO_TCP)) != 0) {
-          mbedtls_snprintf(1, err, sizeof(err), status, "can't connect to hostname %s", hostname);
-          break;
-        } else if ((status = socket_set_blocking(c, blocking)) != 0) {
+      }
+      socket_set_blocking(c, blocking);
+      c->state = STATE_RESOLVING;
+    case STATE_RESOLVING:
+      while (c->state == STATE_RESOLVING) {
+        int error = 0;
+        struct addrinfo *ent;
+        do {
+          switch (error = dns_ai_nextent(&ent, c->ai)) {
+            case 0:
+              c->addr.sin_family = dns_sa_family(ent->ai_addr);
+              c->addr.sin_addr = *(struct in_addr*)dns_sa_addr(dns_sa_family(ent->ai_addr), ent->ai_addr, NULL);
+              c->addr.sin_port = htons(port);
+              c->state = STATE_CONNECTING;
+              break;
+            case ENOENT:
+              break;
+            case DNS_EAGAIN:
+              if (dns_ai_elapsed(c->ai) > 30)
+                c->state = STATE_CLOSED;
+              if (!blocking) {
+                int events = dns_res_events2(c->resolver, DNS_SYSPOLL);
+                const char* type;
+                if ((events & DNS_POLLOUT) != 0 && (events & DNS_POLLIN) != 0)
+                  type = "both";
+                else if ((events & DNS_POLLOUT) != 0)
+                  type = "write";
+                else
+                  type = "read";
+                return socket_yield(L, dns_res_pollfd(c->resolver), type, f_socket_openk);
+              }
+              dns_ai_poll(c->ai, 1);
+              break;
+            default:
+              return luaL_error(L, "dns_ai_nextent: %s (%d)", dns_strerror(error), error);
+          }
+        } while (error != ENOENT && c->state == STATE_RESOLVING);
+        dns_res_close(c->resolver);
+        c->resolver = NULL;
+        dns_ai_close(c->ai);
+        c->ai = NULL;
+      }
+    case STATE_CONNECTING: {
+      signal(SIGPIPE, SIG_IGN);
+      const char* ip = inet_ntoa(c->addr.sin_addr);
+      if (connect(c->fd, (struct sockaddr *) &c->addr, sizeof(c->addr)) == -1) {
+        snprintf(err, sizeof(err), "can't connect to host %s [%s] on port %d", hostname, ip, port);
+        break;
+      }
+      if (c->is_ssl) {
+        if ((status = mbedtls_net_set_nonblock(&c->net_context)) != 0) {
           mbedtls_snprintf(1, err, sizeof(err), status, "can't set up ssl for nonblocking: %d", status);
           break;
         } else if ((status = mbedtls_ssl_set_hostname(&c->ssl_context, hostname)) != 0) {
           mbedtls_snprintf(1, err, sizeof(err), status, "can't set hostname %s", hostname);
           break;
         }
-        c->fd = c->net_context.fd;
-        c->state = STATE_HANDSHAKE;
       } else {
-        struct hostent *host = gethostbyname(hostname);
-        struct sockaddr_in dest_addr = {0};
-        if (!host) {
-          snprintf(err, sizeof(err), "can't resolve hostname %s", hostname);
+        if (connect(c->fd, (struct sockaddr *) &c->addr, sizeof(struct sockaddr)) == -1) {
+          snprintf(err, sizeof(err), "can't connect to host %s [%s] on port %d", hostname, ip, port);
           break;
         }
-        c->fd = socket(AF_INET, SOCK_STREAM, 0);
-        socket_set_blocking(c, blocking);
-        c->addr.sin_family = AF_INET;
-        c->addr.sin_port = htons(port);
-        c->addr.sin_addr.s_addr = *(long*)(host->h_addr);
-        c->state = STATE_HANDSHAKE;
       }
+      c->state = STATE_HANDSHAKE;
+    } 
     case STATE_HANDSHAKE:
       if (c->is_ssl) {
         int status = mbedtls_ssl_handshake(&c->ssl_context);
@@ -229,12 +289,6 @@ static int f_socket_openk(lua_State* L, int status, lua_KContext ctx) {
           break;
         } else if (((status = mbedtls_ssl_get_verify_result(&c->ssl_context)) != 0) && !no_verify_ssl) {
           mbedtls_snprintf(1, err, sizeof(err), status, "can't verify result for %s", hostname);
-          break;
-        }
-      } else {
-        const char* ip = inet_ntoa(c->addr.sin_addr);
-        if (connect(c->fd, (struct sockaddr *) &c->addr, sizeof(struct sockaddr)) == -1 ) {
-          snprintf(err, sizeof(err), "can't connect to host %s [%s] on port %d", hostname, ip, port);
           break;
         }
       }
@@ -266,6 +320,10 @@ static int f_socket_close(lua_State* L) {
   lua_getfield(L, 1, "__c");
   if (!lua_isnil(L, -1)) {
     socket_t* c = lua_touserdata(L, -1);
+    if (c->resolver)
+      dns_res_close(c->resolver);
+    if (c->ai)
+      dns_ai_close(c->ai);
     if (c->is_ssl) {
       mbedtls_ssl_free(&c->ssl_context);
       mbedtls_net_free(&c->net_context);
@@ -449,13 +507,14 @@ int luaopen_client(lua_State* L) {
   lua_pushcfunction(L, f_client_gc);
   lua_setfield(L, -2, "__gc");
   lua_setmetatable(L, -2);
+  
   const char* lua_agent_code = "\n\
     local socket = ...\n\
     local PATHSEP = '/'\n\
     socket.ssl('system', '/tmp' .. PATHSEP .. 'ssl.certs', 0)\n\
     local function components(url)\n\
       local _, _, protocol, hostname, port, url = url:find('^(%w+)://([^/:]+):?(%d*)(.*)$')\n\
-      return protocol, hostname, (not port or port == '') and (protocol == 'https' and 443 or 80) or tonumber(port), (not url or url == '' and '/' or url)\n\
+      return protocol, hostname, (not port or port == '') and (protocol == 'https' and 443 or 80) or tonumber(port), (port and port ~= '') and port or nil, (not url or url == '' and '/' or url)\n\
     end\n\
     \n\
     function socket:read(bytes, blocking, exact)\n\
@@ -503,7 +562,6 @@ int luaopen_client(lua_State* L) {
     end\n\
     \n\
     socket.write = socket.send\n\
-    \n\
     local response = {}\n\
     response.__index = response\n\
     function response.new(socket)\n\
@@ -529,6 +587,7 @@ int luaopen_client(lua_State* L) {
         end\n\
       else\n\
         local remaining = (self.headers['content-length'] or math.huge) - self.bytes_read\n\
+        print('REMAINING', remaining)\n\
         if remaining <= 0 then return nil end\n\
         chunk = self.socket:read(math.min(remaining, bytes), blocking)\n\
         self.bytes_read = self.bytes_read + #chunk\n\
@@ -538,7 +597,7 @@ int luaopen_client(lua_State* L) {
     \n\
     \n\
     function socket:request(options)\n\
-      local protocol, hostname, port, remainder = components(options.url)\n\
+      local protocol, hostname, implied_port, explicit_port, remainder = components(options.url)\n\
       local lines = {}\n\
       table.insert(lines, string.format(\"%s %s HTTP/1.1\", options.method, remainder or '/'))\n\
       for k, v in pairs(options.headers) do table.insert(lines, k .. ':' .. v) end\n\
@@ -582,25 +641,29 @@ int luaopen_client(lua_State* L) {
         decode = function(value) return value end,\n\
         request = function(self, method, url, body, options, headers)\n\
           local t = { }\n\
+          headers = headers or {}\n\
+          options = options or {}\n\
           for k,v in pairs(self.options) do t[k] = v end\n\
-          for k,v in pairs(options or {}) do t[k] = v end\n\
-          for k,v in pairs(headers or {}) do t.headers[k] = v end\n\
+          for k,v in pairs(options) do t[k] = v end\n\
+          for k,v in pairs(headers) do t.headers[k] = v end\n\
           t.method = method\n\
           t.url = url\n\
           t.body = body\n\
           local res\n\
           while true do\n\
-            local protocol, hostname, port, path = components(t.url)\n\
+            local protocol, hostname, implied_port, explicit_port, path = components(t.url)\n\
+            print('URL', t.url, implied_port)\n\
             if self.cookies[hostname] then\n\
               local values = {}\n\
               for k,v in pairs(self.cookies[hostname]) do table.insert(values, k .. '=' .. self.encode(v.value)) end\n\
               if not t.headers['cookie'] then t.headers['cookie'] = table.concat(values, '; ') end\n\
             end\n\
-            local key = protocol .. hostname .. port\n\
-            local s = self.connections[key] or assert(socket:open(protocol, hostname, port, not coroutine.isyieldable()))\n\
+            local key = protocol .. hostname .. implied_port\n\
+            local s = self.connections[key] or assert(socket:open(protocol, hostname, implied_port, not coroutine.isyieldable()))\n\
             self.connections[key] = s\n\
-            if not t.headers.host then t.headers.host = hostname .. ':' .. port end\n\
+            if not headers.host then t.headers.host = hostname .. (explicit_port and (':' .. port) or '') end\n\
             res = s:request(t)\n\
+            print(res)\n\
             if res.headers['set-cookie'] then\n\
               for i,v in ipairs(type(res.headers['set-cookie']) == 'table' and res.headers['set-cookie'] or { res.headers['set-cookie'] }) do\n\
                 local _, e, name, value = v:find('^([^=]+)=([^;]+)')\n\
@@ -629,8 +692,8 @@ int luaopen_client(lua_State* L) {
             t.body = nil\n\
             if t.headers then t.headers['content-length'] = nil end\n\
             if location:find('^/') then\n\
-              protocol, hostname, port, path = components(t.url)\n\
-              t.url = protocol .. '://' .. hostname .. ':' .. port .. location\n\
+              protocol, hostname, implied_port, explicit_port, path = components(t.url)\n\
+              t.url = protocol .. '://' .. hostname .. (explicit_port and (':' .. explicit_port) or '') .. location\n\
             else\n\
               t.url = location\n\
             end\n\
