@@ -500,7 +500,7 @@ static int f_client_gc(lua_State* L) {
 }
 
 
-int luaopen_client(lua_State* L) {
+int luaopen_wtk_client(lua_State* L) {
   luaL_newlib(L, socket_lib);
   lua_pushvalue(L, -1);
   lua_setfield(L, -2, "__index");
