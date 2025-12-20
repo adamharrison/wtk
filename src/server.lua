@@ -75,19 +75,34 @@ function Response:write_header(client)
   table.insert(parts, "\r\n")
   client:write_block(table.concat(parts))
 end
+
+function Response:write_encoded(client, chunk)
+  if self.headers['transfer-encoding'] == 'chunked' then
+    client:write_block(string.format("%x\r\n", #chunk))
+    client:write_block(chunk)
+    client:write_block('\r\n')
+  else
+    client:write_block(chunk)
+  end
+end
+
 function Response:write(client)
   if client.closed then return end
   self:write_header(client)
   if self.body then 
     if type(self.body) == 'function' then
       for chunk in self.body do
-        client:write_block(chunk)
+        if #chunk > 0 then
+          self:write_encoded(client, chunk)
+        end
+        coroutine.yield()
       end
     else
-      client:write_block(self.body)
+      self:write_encoded(client, self.body)
     end
   end
-  if not self.headers['content-length'] then client:close() end
+  self:write_encoded(client, '') -- for chunked
+  if not self.headers['content-length'] and self.headers['transfer-encoding'] ~= 'chunked' then client:close() end
   if client.server.verbose then
     if self.code >= 300 and self.code < 400 then
       client.server.log:verbose("RES %s %s %s", self.code, client.peer, self.headers.location)
@@ -234,7 +249,7 @@ function Client:write(buf)
   self.last_activity = os.time() 
   return self.socket:send(buf) 
 end
-function Client:write_block(buf) 
+function Client:write_block(buf)
   while #buf > 0 do
     local len, err = self:write(buf)
     if not len and err == "timeout" then 
@@ -280,19 +295,28 @@ function Client:yield(type) coroutine.yield({ socket = self.socket, type = type 
 function Client:process()
   while coroutine.status(self.co) ~= "dead" do
     local status, result = coroutine.resume(self.co)
-    if coroutine.status(self.co) ~= "dead" and result then
-      if self.waiting and self.waiting ~= result.socket or (self.waiting_type ~= result.waiting_type) then   
-        self.server.loop:rm(self.waiting) 
-        self.waiting = nil 
-        self.waiting_type = nil
+    if coroutine.status(self.co) ~= "dead" then
+      if result then
+        if self.waiting and self.waiting ~= result.socket or (self.waiting_type ~= result.waiting_type) then   
+          self.server.loop:rm(self.waiting) 
+          self.waiting = nil 
+          self.waiting_type = nil
+        end
+        if not self.waiting and (result.socket or result.fd or result.waiting) then
+          self.waiting_type = result.type or "read"
+          self.waiting = self.server.loop:add(result.socket or result.fd or timer.new(result.timeout), function() 
+            self:process() 
+          end, self.waiting_type, result.edge)
+        end
+        break
+      else
+        if self.waiting then
+          self.server.loop:rm(self.waiting)
+          self.waiting = nil
+          self.waiting_type = nil
+        end
+        self.server.loop:add(function() self:process() end)
       end
-      if not self.waiting and (result.socket or result.fd or result.waiting) then
-        self.waiting_type = result.type or "read"
-        self.waiting = self.server.loop:add(result.socket or result.fd or timer.new(result.timeout), function() 
-          self:process() 
-        end, self.waiting_type, result.edge)
-      end
-      break
     end
   end
   if coroutine.status(self.co) == "dead" and self.waiting then
