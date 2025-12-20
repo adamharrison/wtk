@@ -39,7 +39,8 @@ static int no_verify_ssl;
 
 #define MAX_ERROR_SIZE 512
 
-#include "dns.c"
+#define DNS_IMPLEMENTATION
+#include "dns.h"
 
 typedef enum socket_state_e {
   STATE_INIT,
@@ -499,7 +500,7 @@ static int f_client_gc(lua_State* L) {
 }
 
 
-int luaopen_client(lua_State* L) {
+int luaopen_wtk_client(lua_State* L) {
   luaL_newlib(L, socket_lib);
   lua_pushvalue(L, -1);
   lua_setfield(L, -2, "__index");
@@ -587,7 +588,6 @@ int luaopen_client(lua_State* L) {
         end\n\
       else\n\
         local remaining = (self.headers['content-length'] or math.huge) - self.bytes_read\n\
-        print('REMAINING', remaining)\n\
         if remaining <= 0 then return nil end\n\
         chunk = self.socket:read(math.min(remaining, bytes), blocking)\n\
         self.bytes_read = self.bytes_read + #chunk\n\
@@ -652,7 +652,6 @@ int luaopen_client(lua_State* L) {
           local res\n\
           while true do\n\
             local protocol, hostname, implied_port, explicit_port, path = components(t.url)\n\
-            print('URL', t.url, implied_port)\n\
             if self.cookies[hostname] then\n\
               local values = {}\n\
               for k,v in pairs(self.cookies[hostname]) do table.insert(values, k .. '=' .. self.encode(v.value)) end\n\
@@ -663,7 +662,6 @@ int luaopen_client(lua_State* L) {
             self.connections[key] = s\n\
             if not headers.host then t.headers.host = hostname .. (explicit_port and (':' .. port) or '') end\n\
             res = s:request(t)\n\
-            print(res)\n\
             if res.headers['set-cookie'] then\n\
               for i,v in ipairs(type(res.headers['set-cookie']) == 'table' and res.headers['set-cookie'] or { res.headers['set-cookie'] }) do\n\
                 local _, e, name, value = v:find('^([^=]+)=([^;]+)')\n\
