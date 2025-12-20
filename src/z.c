@@ -9412,84 +9412,146 @@ static int mz_stat64(const char *path, struct __stat64 *buffer)
 
 #endif /*#ifndef MINIZ_NO_ARCHIVE_APIS*/
 
-static int f_z_deflate(lua_State* L) {
-    size_t length;
-    const char* packet = luaL_checklstring(L, 1, &length);
-    int level = 1;
-    int chunk_size = 32*1024;
-    if (lua_type(L, 2) == LUA_TTABLE) {
-        lua_getfield(L, 2, "level");
-        if (!lua_isnil(L, -1))
-            level = luaL_checkinteger(L, -1);
-        lua_pop(L, 1);
-        lua_getfield(L, 2, "chunk_size");
-        if (!lua_isnil(L, -1))
-            chunk_size = luaL_checkinteger(L, -1);
-        lua_pop(L, 1);
-    }
-    mz_stream stream = {0};
-    mz_deflateInit(&stream, level);
+// Begin actual lua module.
+
+typedef enum {
+    Z_CLOSED,
+    Z_DEFLATE,
+    Z_INFLATE
+} z_type_e;
+
+typedef int (*f_comp_op_t)(mz_stream*, int);
+
+typedef struct {
+    mz_stream stream;
+    z_type_e type;
+    int buffer_length;
+    int buffer_capacity;
+    char buffer[];
+} z_t;
+
+static int imin(int a, int b) { return a < b ? a : b; }
+static int imax(int a, int b) { return a > b ? a : b; }
+
+static int f_z_send(lua_State* L) {
+    z_t* z = (z_t*)lua_touserdata(L, 1);
+    size_t packet_length;
+    const char* packet = luaL_checklstring(L, 2, &packet_length);
+    size_t offset = luaL_optinteger(L, 3, 1) - 1;
+    size_t max_length = packet_length - offset;
+    size_t length = imin(luaL_optinteger(L, 4, max_length), max_length);
     luaL_Buffer buffer;
     luaL_buffinit(L, &buffer);
-    char compression_buffer[chunk_size];
-    while (1) {
-        int left = length - stream.total_in;
-        stream.next_in = &packet[stream.total_in];
-        stream.avail_in = length - stream.total_in;
-        stream.next_out = compression_buffer;
-        stream.avail_out = chunk_size;
-        int err = mz_deflate(&stream, left ? MZ_NO_FLUSH : MZ_FINISH);
+    size_t current_offset = offset;
+    f_comp_op_t mz_comp = z->type == Z_DEFLATE ? mz_deflate : mz_inflate;
+    char compression_buffer[z->buffer_capacity];
+    int remaining_length = length;
+    while (remaining_length > 0) {
+        int remaining_capacity = z->buffer_capacity - z->buffer_length;
+        int packet_processed = imin(remaining_capacity, remaining_length);
+        memcpy(&z->buffer[z->buffer_length], &packet[current_offset], packet_processed);
+        z->buffer_length += packet_processed;
+        current_offset += packet_processed;
+        remaining_length -= packet_processed;
+        z->stream.next_in = z->buffer;
+        z->stream.avail_in = z->buffer_length;
+        z->stream.next_out = compression_buffer;
+        z->stream.avail_out = z->buffer_capacity;
+        int err = mz_comp(&z->stream, MZ_NO_FLUSH);
         if (err != MZ_OK && err != MZ_STREAM_END) {
-            mz_deflateEnd(&stream);
-            return luaL_error(L, "error delating stream: %s", mz_error(err));
+            lua_pushnil(L);
+            lua_pushfstring(L, "error processing stream: %s", mz_error(err));
+            return 2;
         }
-        luaL_addlstring(&buffer, compression_buffer, chunk_size - stream.avail_out);
-        if (err == MZ_STREAM_END && !stream.avail_in && stream.avail_out)
+        int size = z->buffer_capacity - z->stream.avail_out;
+        if (z->stream.avail_in)
+            memmove(z->buffer, z->stream.next_in, z->stream.avail_in);
+        z->buffer_length = z->stream.avail_in;
+        if (size > 0)
+            luaL_addlstring(&buffer, compression_buffer, size);
+        else
             break;
     }
-    mz_deflateEnd(&stream);
     luaL_pushresult(&buffer);
     return 1;
 }
 
-static int f_z_inflate(lua_State* L) {
-    size_t length;
-    const char* packet = luaL_checklstring(L, 1, &length);
-    int chunk_size = 8192;
-    if (lua_type(L, 2) == LUA_TTABLE) {
-        lua_getfield(L, 2, "chunk_size");
+int f_z_open(lua_State* L) {
+    const char* type = luaL_checkstring(L, 2);
+    int level = 1;
+    int buffer_capacity = 8192;
+    if (lua_type(L, 3) == LUA_TTABLE) {
+        lua_getfield(L, 3, "level");
         if (!lua_isnil(L, -1))
-            chunk_size = luaL_checkinteger(L, -1);
+            level = luaL_checkinteger(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, 3, "buffer");
+        if (!lua_isnil(L, -1))
+            buffer_capacity = imax(luaL_checkinteger(L, -1), 8192);
         lua_pop(L, 1);
     }
-    mz_stream stream = {0};
-    mz_inflateInit(&stream);
+    z_t* z = lua_newuserdata(L, sizeof(z_t) + buffer_capacity);
+    memset(z, 0, sizeof(z_t) + buffer_capacity);
+    lua_pushvalue(L, 1);
+    lua_setmetatable(L, -2);
+    z->buffer_capacity = buffer_capacity;
+    z->buffer_length = 0;
+    if (strcmp(type, "deflate") == 0) {
+        mz_deflateInit(&z->stream, level);
+        z->type = Z_DEFLATE;
+    } else if (strcmp(type, "inflate") == 0) {
+        mz_inflateInit(&z->stream);
+        z->type = Z_INFLATE;
+    } else 
+        return luaL_error(L, "unknown type %s", type);
+    return 1;
+}
+
+int f_z_flush(lua_State* L) {
+    z_t* z = (z_t*)lua_touserdata(L, 1);
+    if (z->type == Z_CLOSED)
+        return 0;
+    int err = MZ_OK;
+    f_comp_op_t mz_comp = z->type == Z_DEFLATE ? mz_deflate : mz_inflate;
+    char compression_buffer[z->buffer_capacity];
     luaL_Buffer buffer;
     luaL_buffinit(L, &buffer);
-    char compression_buffer[chunk_size];
-    while (1) {
-        int left = length - stream.total_in;
-        stream.next_in = &packet[stream.total_in];
-        stream.avail_in = length - stream.total_in;
-        stream.next_out = compression_buffer;
-        stream.avail_out = chunk_size;
-        int err = mz_inflate(&stream, left ? MZ_NO_FLUSH : MZ_FINISH);
+    while (err != MZ_STREAM_END) {
+        z->stream.next_in = z->buffer;
+        z->stream.avail_in = z->buffer_length;
+        z->stream.next_out = compression_buffer;
+        z->stream.avail_out = z->buffer_capacity;
+        err = mz_comp(&z->stream, MZ_FINISH);
         if (err != MZ_OK && err != MZ_STREAM_END) {
-            mz_inflateEnd(&stream);
-            return luaL_error(L, "error delating stream: %s", mz_error(err));
+            lua_pushnil(L);
+            lua_pushfstring(L, "error flushing stream: %s", mz_error(err));
+            return 2;
         }
-        luaL_addlstring(&buffer, compression_buffer, chunk_size - stream.avail_out);
-        if (err == MZ_STREAM_END && !stream.avail_in && stream.avail_out)
-            break;
+        int size = z->buffer_capacity - z->stream.avail_out;
+        if (size > 0)
+            luaL_addlstring(&buffer, compression_buffer, size);
     }
-    mz_inflateEnd(&stream);
     luaL_pushresult(&buffer);
+    return 1;
+}
+
+int f_z_close(lua_State* L) {
+    z_t* z = (z_t*)lua_touserdata(L, 1);
+    f_z_flush(L);
+    if (z->type == Z_DEFLATE)
+        mz_deflateEnd(&z->stream);
+    else if (z->type == Z_INFLATE)
+        mz_inflateEnd(&z->stream);
+    z->type = Z_CLOSED;
     return 1;
 }
 
 static const luaL_Reg f_z_api[] = {
-    { "deflate",   f_z_deflate      },
-    { "inflate",   f_z_inflate      },
+    { "open",      f_z_open         },
+    { "send",      f_z_send         },
+    { "flush",     f_z_flush        },
+    { "close",     f_z_close        },
+    { "__gc",      f_z_close        },
     { NULL,        NULL             }
 };
 
@@ -9498,5 +9560,36 @@ int luaopen_wtk_z(lua_State* L) {
     luaL_setfuncs(L, f_z_api, 0);
     lua_pushvalue(L, -1);
     lua_setfield(L, -2, "__index");
+    const char* lua_z_code = "local z = ...\n\
+    function z.compress(op, packet, options)\n\
+        local self = z:open(op, options)\n\
+        local t = {}\n\
+        local i = 1\n\
+        local chunk_size = options.chunk_size or 8192\n\
+        while i <= #packet do\n\
+            local chunk = assert(self:send(packet, i, chunk_size))\n\
+            if options.yield then\n\
+                table.insert(t, chunk)\n\
+            else\n\
+                coroutine.yield(chunk)\n\
+            end\n\
+            i = i + chunk_size\n\
+        end\n\
+        local chunk = assert(self:close())\n\
+        if options.yield then\n\
+            table.insert(t, chunk)\n\
+            return table.concat(t, '')\n\
+        else\n\
+            coroutine.yield(chunk)\n\
+        end\n\
+    end\n\
+    function z.deflate(packet, options) return z.compress('deflate', packet, options or {}) end\n\
+    function z.inflate(packet, options) return z.compress('inflate', packet, options or {}) end\n\
+    return z";
+    if (luaL_loadstring(L, lua_z_code))
+        return lua_error(L);
+    lua_pushvalue(L, -2);
+    lua_call(L, 1, 0);
     return 1;
+
 }

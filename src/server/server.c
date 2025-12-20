@@ -247,6 +247,7 @@ static int f_loop_new(lua_State* L) {
 	int epollfd = epoll_create1(0);
 	lua_pushinteger(L, epollfd); lua_setfield(L, -2, "epollfd");
 	lua_newtable(L); lua_setfield(L, -2, "fds");
+	lua_newtable(L); lua_setfield(L, -2, "deferred");
 	luaL_setmetatable(L, "wtk.server.loop");
   return 1;
 }
@@ -262,31 +263,57 @@ static int lua_tofd(lua_State* L, int index) {
 }
 
 static int f_loop_add(lua_State* L) {
+	if (lua_type(L, 2) == LUA_TFUNCTION) {
+		luaL_getsubtable(L, 1, "deferred");
+		int length = lua_rawlen(L, -1);
+		luaL_checktype(L, 2, LUA_TFUNCTION);
+		lua_pushvalue(L, 2);
+		lua_rawseti(L, -2, length + 1);
+		lua_pushvalue(L, 1);
+		return 1;
+	}
 	int mask = EPOLLRDHUP | EPOLLPRI | EPOLLERR | EPOLLHUP;
 	if (lua_type(L, 4) == LUA_TSTRING)	{
 		const char* type = lua_tostring(L, 4);
-		if (strcmp(type, "read") == 0)
+		if (strcmp(type, "read") == 0 || strcmp(type, "both") == 0)
 			mask |= EPOLLIN;
-		else if (strcmp(type, "write") == 0)
+		if (strcmp(type, "write") == 0 || strcmp(type, "both") == 0)
 			mask |= EPOLLOUT;
 	} else
 		mask |= EPOLLIN;
 	if (lua_isboolean(L, 5))
 		mask |= EPOLLET;
-	int fd = lua_tofd(L, 2);
 	lua_getfield(L, 1, "epollfd");
-	struct epoll_event event = { .events = mask, .data = { .fd = fd } };
-	epoll_ctl(luaL_checkinteger(L, -1), EPOLL_CTL_ADD, fd, &event);
-	luaL_getsubtable(L, 1, "fds");
-	lua_pushinteger(L, fd); 
+	int epollfd = luaL_checkinteger(L, -1);
+	lua_pop(L, 1);
+	int is_table = lua_type(L, 2) == LUA_TTABLE;
+	int length = is_table ? lua_rawlen(L, 2) : 1;
+
 	lua_newtable(L);
 	luaL_checktype(L, 3, LUA_TFUNCTION);
 	lua_pushvalue(L, 3);
 	lua_rawseti(L, -2, 1);
 	lua_pushvalue(L, 2);
 	lua_rawseti(L, -2, 2);
-	lua_rawset(L, -3);
-	lua_pushvalue(L, 2);
+	int table = lua_gettop(L);
+
+	for (int i = 0; i < length; ++i) {
+		int fd;
+		if (is_table) {
+			lua_rawgeti(L, 2, i + 1);
+			fd = lua_tofd(L, -1);
+			lua_pop(L, 1);
+		} else {
+			fd = lua_tofd(L, 2);
+		}
+		struct epoll_event event = { .events = mask, .data = { .fd = fd } };
+		epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &event);
+		luaL_getsubtable(L, 1, "fds");
+		lua_pushinteger(L, fd); 
+		lua_pushvalue(L, table);
+		lua_rawset(L, -3);
+		lua_pushinteger(L, fd); // Should probably fix this up to actually handle muliptle FDs correctly.
+	}
   return 1;
 }
 
@@ -308,6 +335,17 @@ static int f_loop_run(lua_State* L) {
 	struct epoll_event ev, events[100];
 	luaL_getsubtable(L, 1, "fds");
 	while (1) {
+		luaL_getsubtable(L, 1, "deferred");
+		size_t len = lua_rawlen(L, -1);
+		if (len) {
+			for (int i = 1; i <= len; ++i) {
+				lua_rawgeti(L, -1, i);
+				lua_call(L, 0, 0);
+			}
+			lua_newtable(L);
+			lua_setfield(L, 1, "deferred");
+		}
+		lua_pop(L, 1);
 		int nfds = epoll_wait(epollfd, events, 100, -1);
 		for (int n = 0; n < nfds; ++n) {
 			lua_pushinteger(L, events[n].data.fd);
@@ -344,9 +382,9 @@ static int f_loop_gc(lua_State* L) {
 static const luaL_Reg loop_lib[] = {
   { "new",      f_loop_new   },
   { "add",      f_loop_add   },
-  { "rm",       f_loop_rm   },
+  { "rm",       f_loop_rm    },
   { "run",      f_loop_run   },
-  { "__gc",     f_loop_gc   },
+  { "__gc",     f_loop_gc    },
   { NULL,       NULL }
 };
 
