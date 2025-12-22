@@ -1672,15 +1672,15 @@ static void json_parse_object_context(lua_State *l, json_parse_t *json)
      * .., table, key, value */
     json_decode_descend(l, json, 3);
 
-    lua_newtable(l);
-
     json_next_token(json, &token);
 
     /* Handle empty objects */
     if (token.type == T_OBJ_END) {
+        lua_pushlightuserdata(l, (void*)0x1);
         json_decode_ascend(json);
         return;
     }
+    lua_newtable(l);
 
     while (1) {
         if (token.type != T_STRING)
@@ -1903,8 +1903,6 @@ static int lua_cjson_new(lua_State *l)
     lua_pushlightuserdata(l, NULL);
     lua_setfield(l, -2, "null");
     lua_pushlightuserdata(l, (void*)1);
-    lua_setfield(l, -2, "empty_array");
-    lua_pushlightuserdata(l, (void*)2);
     lua_setfield(l, -2, "empty_object");
 
     /* Set module name / version fields */

@@ -7,10 +7,11 @@ These are a bunch of non-blocking modules that can be easily packaged into a sin
 Here's an example of a non-blocking webserver server with a database connection.
 
 ```lua
+local wtk = require "wtk"
 local DBIX = require "wtk.dbix"
 local Server = require "wtk.server"
-local Loop = Server.Loop
-local Countdown = Server.Countdown
+local Loop = require "wtk.loop"
+local Countdown = require "wtk.countdown"
 local loop = Loop.new()
 local args = Server.pargs({ ... }, { host = "string", port = "integer", verbose = "flag", timeout = "integer",  })
 
@@ -115,6 +116,7 @@ $CC -DMAKE_LIB=1 -Ilib/lua lib/lua/onelua.c *.c -lm -o $BIN -static  $@
   static const char* packed_luac[] = { NULL, NULL, NULL };
 #endif
 
+int luaopen_wtk(lua_State* L);
 int luaopen_wtk_server_driver(lua_State* L);
 
 int main(int argc, char* argv[]) {
@@ -122,6 +124,8 @@ int main(int argc, char* argv[]) {
   luaL_openlibs(L);
   lua_getglobal(L, "package");
   lua_getfield(L, -1, "preload");
+  lua_pushcfunction(L, luaopen_wtk);
+  lua_setfield(L, -2, "wtk");
   lua_pushcfunction(L, luaopen_wtk_server_driver);
   lua_setfield(L, -2, "wtk.server.driver");
   for (int i = 0; packed_luac[i]; i += 3) {
@@ -175,4 +179,11 @@ CMD ["./dawoot", "--port=80"]
 Although this will grealty increase the size of the container to about `167MB`, so if you are on a limited
 server, you may wish to compile locally.
 
+## Utilities
+
+In addition to various modules, I'm also posting a number of small utilities that I use to replace common, yet annoying anti-ergonomic utilities.
+
+The benefit to these is that they're all, small, speedy, statically compiled binaries, for linux. So you don't need an entire python environment just to run `jq`.
+
+`wtkjq`: `jq` with a sensible, lua-based interface. Slightly faster than regular `jq`.
 
