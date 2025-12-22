@@ -1,2 +1,4 @@
 *.so
 *.o
+packed.c
+utilities/wtkjq/wtkjq
