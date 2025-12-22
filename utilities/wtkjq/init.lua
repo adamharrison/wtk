@@ -369,7 +369,7 @@ local args = wtk.pargs({ ... }, {
 })
 local filter = (args[1] or '.')
 if args["from-file"] then filter = assert(io.open(args["from-file"], "rb")):read("*all") end
-local target = "return function(a) return " .. translate_function((args[1] or '.')) .. " end"
+local target = "return function(a) return " .. translate_function(filter) .. " end"
 if args.debug then
   io.stderr:write(target)
   os.exit(0)
