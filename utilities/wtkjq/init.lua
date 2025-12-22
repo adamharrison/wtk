@@ -125,7 +125,6 @@ local function translate_range(str)
 end
 
 local function translate_function(str, wrap)
-  
   local s, e, arrow = str:find("^%((.-)%)%s*=>%s*")
   local chunk
   local op = nil

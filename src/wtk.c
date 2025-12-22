@@ -241,8 +241,15 @@ int luaopen_wtk(lua_State* L) {
 		local i = 1\n\
 		for k,v in pairs(arguments) do if math.type(k) ~= 'integer' then args[k] = v end end\n\
 		while i <= #arguments do\n\
-			local s,e, option, value = arguments[i]:find('%-%-([^=]+)=?(.*)')\n\
+			local s,e, option, value = arguments[i]:find('^%-%-([^=]+)=?(.*)')\n\
 			local option_name = s and (options[option] and option or option:gsub('^no%-', ''))\n\
+			if not s and short_options then\n\
+				s,e, option = arguments[i]:find('^%-(%w)')\n\
+				if s and short_options[option] and options[short_options[option]] then\n\
+					option_name = short_options[option]\n\
+					option = option_name\n\
+				end\n\
+			end\n\
 			if options[option_name] then\n\
 				local flag_type = options[option_name]\n\
 				if flag_type == 'flag' then\n\
@@ -263,7 +270,7 @@ int luaopen_wtk(lua_State* L) {
 				end\n\
 			else\n\
 				local flags = nil\n\
-				s,e,flags = arguments[i]:find('%-(%w+)')\n\
+				s,e,flags = arguments[i]:find('^%-(%w+)')\n\
 				if short_options and flags then\n\
 					for i = 1, #flags do\n\
 						local op = short_options[flags:sub(i, i)]\n\
