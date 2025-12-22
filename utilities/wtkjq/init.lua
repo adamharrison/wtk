@@ -469,7 +469,6 @@ local pretty = not args.compress
 local function print_value(value)
   if type(value) ~= "table" then 
     write(value)
-    output_stream:write("\n")
     return
   end
   local stack = { { value } }
