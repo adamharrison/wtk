@@ -236,7 +236,7 @@ int luaopen_wtk(lua_State* L) {
   wtk.Loop = wtk.loop\n\
   package.loaded['wtk.loop'] = wtk.loop\n\
   package.loaded['wtk.system'] = wtk.system\n\
-	function wtk.pargs(arguments, options)\n\
+	function wtk.pargs(arguments, options, short_options)\n\
 		local args = {}\n\
 		local i = 1\n\
 		for k,v in pairs(arguments) do if math.type(k) ~= 'integer' then args[k] = v end end\n\
@@ -253,7 +253,7 @@ int luaopen_wtk(lua_State* L) {
 						value = arguments[i+1]\n\
 						i = i + 1\n\
 					end\n\
-					if flag_type == 'number' and tonumber(flag_type) == nil then error('option ' .. option .. ' should be a number') end\n\
+					if flag_type == 'number' and tonumber(value) == nil then error('option ' .. option .. ' should be a number') end\n\
 					if flag_type == 'array' then\n\
 						args[option] = args[option] or {}\n\
 						table.insert(args[option], value)\n\
@@ -262,7 +262,20 @@ int luaopen_wtk(lua_State* L) {
 					end\n\
 				end\n\
 			else\n\
-				table.insert(args, arguments[i])\n\
+				local flags = nil\n\
+				s,e,flags = arguments[i]:find('%-(%w+)')\n\
+				if short_options and flags then\n\
+					for i = 1, #flags do\n\
+						local op = short_options[flags:sub(i, i)]\n\
+						if op then\n\
+							assert(options[op] == 'flag', 'requries ' .. op .. ' to be a flag')\n\
+							args[op] = true\n\
+						end\n\
+					end\n\
+				end\n\
+				if not flags then\n\
+					table.insert(args, arguments[i])\n\
+				end\n\
 			end\n\
 			i = i + 1\n\
 		end\n\
