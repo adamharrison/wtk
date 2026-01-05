@@ -1,8 +1,6 @@
 local wtk = require "wtk"
-local system = wtk.system
+local system = require "wtk.system"
 local json = require "wtk.json"
-
-
 
 --[[
 The following strings should be translated int he following actions
@@ -63,6 +61,215 @@ The following strings should be translated int he following actions
 ]]
 
 
+local function is_array(a)
+  return type(a) == 'table' and (#a > 0 or (next(a) == nil and a ~= json.empty_object))
+end
+
+local wtkjq_functions = {
+  map = {
+    args = { "function", "..." },
+    func = function(callback_function, ...)
+      local t = {}
+      for _, a in ipairs({ ... }) do
+        if is_array(a) then
+          local r = {}
+          for i, v in ipairs(a) do
+            table.insert(r, callback_function(v))
+          end
+          table.insert(t, r)
+        else
+          table.insert(t, callback_function(a))
+        end
+      end
+      return table.unpack(t)
+    end
+  },
+  reduce = { 
+    args = { "function", "value", "..." },
+    func = function(callback_function, starting_value, ...)
+      local accumulator = starting_value
+      for _, a in ipairs({ ... }) do
+        if is_array(a) then
+          for i, v in ipairs(a) do
+            accumulator = callback_function(accumulator, v)
+          end
+        else
+          accumulator = callback_function(accumulator, a)
+        end
+      end
+      return accumulator
+    end
+  },
+  delete = {
+    args = { "fucntion", "..." },
+    func = function(key, ...)
+      for _, a in pairs({ ... }) do
+        if is_array(a) then
+          for i, v in ipairs(a) do
+            v[key] = nil
+          end
+        else
+          a[key] = nil
+        end
+      end
+      return ...
+    end
+  },
+  sort = {
+    args = { "function", "..." }, 
+    func = function(callback_function, ...)
+      table.sort(callback_function, ...)
+      for _, a in { ... } do
+        table.sort(callback_function, a)
+      end
+      return ...
+    end
+  },
+  select = {
+    args = { "function", "..." },
+    func = function(callback_function, ...)
+      local t = {}
+      for _, a in ipairs({ ... }) do
+        if is_array(a) then
+          local r = {}
+          for i, v in ipairs(a) do
+            if callback_function(v, i) then 
+              table.insert(r, v) 
+            end
+          end
+          if #r > 0 then
+            table.insert(t, r)
+          end
+        else
+          if callback_function(a, 1) then 
+            table.insert(t, a) 
+          end
+        end
+      end
+      return table.unpack(t)
+    end
+  },
+  sum = {
+    args = { "..." },
+    func = function(...)
+      local t = 0
+      for _, a in ipairs({ ... }) do
+        if is_array(a) then
+          for _, v in ipairs(a) do t = t + tonumber(v) end
+        else
+          t = t + tonumber(a)
+        end
+      end
+      return t
+    end
+  },
+  min = {
+    args = { "..." },
+    func = function(...)
+      local t = nil
+      for _, a in ipairs({ ... }) do
+        if is_array(a) then
+          for _, v in ipairs(a) do if not t or t > tonumber(v) then t = tonumber(v) end end
+        else
+          if not t or t > tonumber(a) then t = tonumber(a) end
+        end
+      end
+      return t
+    end
+  },
+  max = {
+    args = { "..." },
+    func = function(...)
+      local t = nil
+      for _, a in ipairs({ ... }) do
+        if is_array(a) then
+          for _, v in ipairs(a) do if not t or t < tonumber(v) then t = tonumber(v) end end
+        else
+          if not t or t < tonumber(a) then t = tonumber(a) end
+        end
+      end
+      return t
+    end
+  }
+}
+wtkjq_functions.grep = wtkjq_functions.select
+wtkjq_functions.filter = wtkjq_functions.select
+
+function splat(range, ...)
+  local result = {}
+  for _, a in ipairs({ ... }) do
+    if type(range) == 'table' and getmetatable(range) == range then
+      local t = {}
+      if not a then return t end
+      if range[1] < 0 then range[1] = #a + range[1] end
+      if range[2] < 0 then range[2] = #a + range[2] end
+      for i = range[1] + 1, range[2] do
+        table.insert(t, a[i + 1])
+      end
+      result[#result + 1] = t
+    elseif type(range) == 'table' then
+      local t = {}
+      if not a then return t end
+      for i, v in ipairs(range) do
+        if v < 0 then v = #a + v end
+        table.insert(t, a[v + 1])
+      end
+      result[#result + 1] = t
+    elseif type(range) == 'number' then 
+      if not a then return nil end
+      if range < 0 then range = #a + range end
+      result[#result + 1] = a[range + 1]
+    else
+      table.move(a, 1, #a, #result + 1, result)
+    end
+  end
+  return table.unpack(result)
+end
+
+
+function mod(key, callback_function, ...)
+  for k, a in ipairs({ ... }) do
+    if is_array(a) then
+      for i, v in ipairs(a) do
+        a[i][key] = mod(key, callback_function, v)
+      end
+    else
+      a[key] = callback_function(a[key])
+    end
+  end
+  return ...
+end
+
+function deref(key, ...)  
+  local t = {}
+  for i, a in ipairs({ ... }) do
+    if not a then return nil end
+    if is_array(a) then
+      local r = {}
+      for _, v in ipairs(a) do
+        table.insert(r, deref(key, v))
+      end
+      table.insert(t, r)
+    else
+      table.insert(t, a[key])
+    end
+  end
+  return table.unpack(t)
+end
+
+function call(method, self, ...)
+  if wtkjq_functions[method] then
+    return wtkjq_functions[method].func(self, ...)
+  elseif type(self) == 'table' and self[method] then
+    return self:method(...)
+  elseif type(self) == 'string' and self[method] then
+    return self[method](..., self)
+  else
+    error("unknown function " .. method)
+  end
+end
+
+
 local function find_next(str, offset, chr)
   local s = offset
   local open_quote = false
@@ -98,7 +305,7 @@ end
 local function contextual_split(str, delimiter)
   local t = {}
   local i = 1
-  while i < #str do
+  while i <= #str do
     local s, e = find_next(str, i, delimiter)
     if s then
       table.insert(t, str:sub(i, s - 1))
@@ -134,7 +341,8 @@ local function translate_function(str, wrap)
     return str
   else
     local i, s, e = 1
-    i = str:find("%S") or 1
+    local si = str:find("%S") or 1
+    i = si
     local final_function = nil
     while i <= #str do
       if str:sub(i, i) == "." then
@@ -159,12 +367,17 @@ local function translate_function(str, wrap)
         local lambda_end = assert(find_next(str, ne, "%)"), "can't find the end of function '" .. word .. "'")
         local func = str:sub(ne + 1, lambda_end - 1)
         if func:find("%S") then
-          if word == "map" or word == "select" then
-            assert(#func > 0, "requires a callback body for '" .. word .. "'")
-            final_function = "call(\"" .. word .. "\", " .. translate_function(func, true) .. "," .. (final_function or "a") .. ")"
-          else
-            final_function = "call(\"" .. word .. "\", " .. func .. ", " .. (final_function or "a")  .. ")"
+          local t = {}
+          local info = assert(wtkjq_functions[word], "unknown function " .. word)
+          for i, arg in ipairs(contextual_split(func, "%s*,%s*")) do
+            if info.args[i] == 'function' then
+              assert(#arg > 0, "requires a callback body for '" .. word .. "'")
+              table.insert(t, translate_function(arg, true))
+            else
+              table.insert(t, arg)
+            end
           end
+          final_function = "call(\"" .. word .. "\", " .. table.concat(t, ", ") .. "," .. (final_function or "a") .. ")"
         else
           assert(word ~= "select" and word ~= "map", "requires a callback body for '" .. word .. "'")
           final_function = "call(\"" .. word .. "\", " .. (final_function or "a") .. ")"
@@ -172,7 +385,7 @@ local function translate_function(str, wrap)
         i = lambda_end + 1
       elseif str:sub(i, i) == "[" then
         local square_end = find_next(str, i, "%]")
-        if i == 1 then
+        if i == si then
           local parts = {}
           local elements = contextual_split(str:sub(i + 1, square_end - 1), ",")
           for i,v in ipairs(elements) do
@@ -200,143 +413,6 @@ local function translate_function(str, wrap)
   end
 end
 
-local function is_array(a)
-  return type(a) == 'table' and (#a > 0 or (next(a) == nil and a ~= json.empty_object))
-end
-
-function mod(key, callback_function, ...)
-  for k, a in ipairs({ ... }) do
-    if is_array(a) then
-      for i, v in ipairs(a) do
-        a[i][key] = mod(key, callback_function, v)
-      end
-    else
-      a[key] = callback_function(a[key])
-    end
-  end
-  return ...
-end
-
-function deref(key, ...)  
-  local t = {}
-  for i, a in ipairs({ ... }) do
-    if not a then return nil end
-    if is_array(a) then
-      local r = {}
-      for _, v in ipairs(a) do
-        table.insert(r, deref(key, v))
-      end
-      table.insert(t, r)
-    else
-      table.insert(t, a[key])
-    end
-  end
-  return table.unpack(t)
-end
-
-local old_select = select
-function splat(range, ...)
-  local result = {}
-  for _, a in ipairs({ ... }) do
-    if type(range) == 'table' and getmetatable(range) == range then
-      local t = {}
-      if not a then return t end
-      if range[1] < 0 then range[1] = #a + range[1] end
-      if range[2] < 0 then range[2] = #a + range[2] end
-      for i = range[1] + 1, range[2] do
-        table.insert(t, a[i + 1])
-      end
-      result[#result + 1] = t
-    elseif type(range) == 'table' then
-      local t = {}
-      if not a then return t end
-      for i, v in ipairs(range) do
-        if v < 0 then v = #a + v end
-        table.insert(t, a[v + 1])
-      end
-      result[#result + 1] = t
-    elseif type(range) == 'number' then 
-      if not a then return nil end
-      if range < 0 then range = #a + range end
-      result[#result + 1] = a[range + 1]
-    else
-      table.move(a, 1, #a, #result + 1, result)
-    end
-  end
-  return table.unpack(result)
-end
-
-function delete(key, ...)
-  for _, a in pairs({ ... }) do
-    if is_array(a) then
-      for i, v in ipairs(a) do
-        v[key] = nil
-      end
-    else
-      a[key] = nil
-    end
-  end
-  return ...
-end
-
-function sort(callback_function, ...)
-  table.sort(callback_function, ...)
-  for _, a in { ... } do
-    table.sort(callback_function, a)
-  end
-  return ...
-end
-
-function select(callback_function, ...)
-  local t = {}
-  for _, a in ipairs({ ... }) do
-    if is_array(a) then
-      local r = {}
-      for i, v in ipairs(a) do
-        if callback_function(v, i) then 
-          table.insert(r, v) 
-        end
-      end
-      if #r > 0 then
-        table.insert(t, r)
-      end
-    else
-      if callback_function(a, 1) then 
-        table.insert(t, a) 
-      end
-    end
-  end
-  return table.unpack(t)
-end
-
-function map(callback_function, ...)
-  local t = {}
-  for _, a in ipairs({ ... }) do
-    if is_array(a) then
-      local r = {}
-      for i, v in ipairs(a) do
-        table.insert(r, map(callback_function, v))
-      end
-      table.insert(t, r)
-    else
-      table.insert(t, callback_function(a))
-    end
-  end
-  return table.unpack(t)
-end
-
-
-function call(method, self, ...)
-  if _G[method] then
-    return _G[method](self, ...)
-  elseif type(self) == 'table' and self[method] then
-    return self:method(...)
-  elseif type(self) == 'string' and self[method] then
-    return self[method](..., self)
-  else
-    error("unknown function " .. method)
-  end
-end
 
 local args = wtk.pargs({ ... }, { 
   compress = "flag", 
@@ -370,10 +446,13 @@ local filter = (args[1] or '.')
 if args["from-file"] then filter = assert(io.open(args["from-file"], "rb")):read("*all") end
 local target = "return function(a) return " .. translate_function(filter) .. " end"
 if args.debug then
-  io.stderr:write(target)
+  io.stderr:write(target .. "\n")
   os.exit(0)
 end
-if args.help or system.isatty(0) then
+if args.version then
+  io.stdout:write(VERSION .. "\n")
+  os.exit(0)
+elseif args.help or system.isatty(0) then
   io.stderr:write([[
 wtkjq - A replacement for jq, with more sensible ergnomics and lua accessibility.
 
@@ -402,9 +481,6 @@ The following options are available:
   -V, --version             show the version
   -h, --help                show the help
 ]])
-  os.exit(0)
-elseif args.version then
-  io.stdout:write(VERSION)
   os.exit(0)
 end
 
@@ -436,10 +512,11 @@ end
 local function write(value)
   local t = type(value)
   if t == 'string' then
-    colorize("green")
     if args["raw-output"] then
+      colorize("normal")
       output_stream:write(value)
     else
+      colorize("green")
       output_stream:write(json.encode(value))
     end
   elseif t == 'boolean' then
@@ -602,9 +679,9 @@ end
 
 xpcall(function() 
   local filter_function = assert(load(target))()
-  local t
+  local t = {}
   if args.slurp then
-    for line in io.stdin.lines() do
+    for line in io.stdin:lines() do
       table.insert(t, json.decode(line))
     end
   elseif args["raw-input"] then
@@ -627,6 +704,6 @@ xpcall(function()
   end
   colorize("normal")
 end, function(err)
-  io.stderr:write(debug.traceback(err, 2))
+  io.stderr:write(debug.traceback(err, 2) .. "\n")
 end)
 os.exit(0) -- don't bother cleaning up cleanly

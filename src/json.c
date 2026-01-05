@@ -42,11 +42,16 @@
 #include <string.h>
 #include <math.h>
 #include <limits.h>
-#include <lua.h>
-#include <lauxlib.h>
+#ifndef lua_h
+    #include <lua.h>
+#endif
+#ifndef lauxlib_h
+    #include <lauxlib.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <strings.h>
 #define FPCONV_G_FMT_BUFSIZE   32
 
 /* Lua CJSON assumes the locale is the same for all threads within a

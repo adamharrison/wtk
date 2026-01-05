@@ -1,6 +1,12 @@
-#include <lua.h>
-#include <lauxlib.h>
-#include <lualib.h>
+#ifndef lua_h
+    #include <lua.h>
+#endif
+#ifndef lualib_h
+    #include <lualib.h>
+#endif
+#ifndef lauxlib_h
+    #include <lauxlib.h>
+#endif
 #include <sqlite3.h>
 #include <stdlib.h>
 #include <string.h>

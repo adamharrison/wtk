@@ -11225,9 +11225,15 @@ int main(int argc, char **argv) {
   #include <mbedtls/debug.h>
 #endif
 
-#include <lua.h>
-#include <lauxlib.h>
-#include <lualib.h>
+#ifndef lua_h
+    #include <lua.h>
+#endif
+#ifndef lualib_h
+    #include <lualib.h>
+#endif
+#ifndef lauxlib_h
+    #include <lauxlib.h>
+#endif
 
 static mbedtls_ssl_config ssl_config;
 static int no_verify_ssl;

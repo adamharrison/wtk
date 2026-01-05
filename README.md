@@ -96,51 +96,27 @@ this repository into your project, and then simply symlinking the relevant sourc
 directory, and using the following build script and `main.c`:
 
 ```bash
+#!/bin/sh
 : ${CC=musl-gcc}
 : ${CFLAGS=-O3 -s}
 : ${BIN=server}
-[[ "$@" == "clean" ]] && rm -rf packed.c lua $BIN && exit 0
-[[ ! -e "packed.c" && ! -e "lua" ]] && $CC lib/lua/onelua.c -o lua -lm
-[[ ! -e "packed.c" ]] && ./lua lib/lua-dbix/scripts/pack.lua *.lua > packed.c
-$CC -DMAKE_LIB=1 -Ilib/lua lib/lua/onelua.c *.c -lm -o $BIN -static  $@
+[ "$@" == "clean" ] && rm -rf packed.c packer lua $BIN && exit 0
+[ ! -e "packer" ]] && gcc -DMAKE_PACKER -DBUNDLED_LUA lib/wtk/src/wtk.c -o packer -lm
+[ ! -e "packed.c" ] && ./packer *.lua > packed.c
+$CC $CFLAGS -DBUNDLED_LUA -Ilib/wtk/src -Ilib/wtk/src/lua *.c -lm -o $BIN -static $@
 ```
 
 ```c
-#include <lua.h>
-#include <lualib.h>
-#include <lauxlib.h>
-
-#ifdef PACKED_LUA
-  extern const char* packed_luac[];
-#else
-  static const char* packed_luac[] = { NULL, NULL, NULL };
-#endif
-
-int luaopen_wtk(lua_State* L);
-int luaopen_wtk_server_driver(lua_State* L);
+#include <wtk.c>
+#include <server/server.c>
 
 int main(int argc, char* argv[]) {
   lua_State* L = luaL_newstate();
   luaL_openlibs(L);
-  lua_getglobal(L, "package");
-  lua_getfield(L, -1, "preload");
-  lua_pushcfunction(L, luaopen_wtk);
-  lua_setfield(L, -2, "wtk");
-  lua_pushcfunction(L, luaopen_wtk_server_driver);
-  lua_setfield(L, -2, "wtk.server.driver");
-  for (int i = 0; packed_luac[i]; i += 3) {
-    if (luaL_loadbuffer(L, packed_luac[i+1], (size_t)packed_luac[i+2], packed_luac[i])) {
-      fprintf(stderr, "Error loading %s: %s", packed_luac[i], lua_tostring(L, -1));
-      return -1;
-    }
-    lua_setfield(L, -2, packed_luac[i]);
-  }
-  lua_pop(L, 1);
-  luaL_loadstring(L, "(package.preload.init or loadfile(\"init.lua\"))(...)");
-  for (int i = 1; i < argc; ++i) 
-    lua_pushstring(L, argv[i]);
-  if (lua_pcall(L, argc - 1, LUA_MULTRET, 0))
+  if (luaW_signal(L) || luaW_packlua(L) || luaW_loadlib(L, "wtk", luaopen_wtk) || luaW_loadlib(L, "wtk.server.driver", luaopen_wtk_server_driver) || luaW_loadentry(L, "init") || luaW_run(L, argc, argv)) {
     fprintf(stderr, "error initializing server: %s\n", lua_tostring(L, -1));
+    return -1;
+  }
   lua_close(L);
   return 0;
 }

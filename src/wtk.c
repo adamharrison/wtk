@@ -1,6 +1,15 @@
-#include <lua.h>
-#include <lualib.h>
-#include <lauxlib.h>
+#ifdef WTK_BUNDLED_LUA
+	#include "lua.c"
+#endif
+#ifndef lua_h
+	#include <lua.h>
+#endif
+#ifndef lualib_h
+	#include <lualib.h>
+#endif
+#ifndef lauxlib_h
+	#include <lauxlib.h>
+#endif
 #include <math.h>
 #include <string.h>
 #include <unistd.h>
@@ -225,13 +234,13 @@ static const luaL_Reg countdown_lib[] = {
 };
 
 
-#define luaL_newclass(L, name) lua_pushliteral(L, #name); luaL_newmetatable(L, "wtk." #name); luaL_setfuncs(L, name##_lib, 0); lua_pushvalue(L, -1); lua_setfield(L, -2, "__index"); lua_rawset(L, -3);
+#define luaW_newclass(L, name) lua_pushliteral(L, #name); luaL_newmetatable(L, "wtk." #name); luaL_setfuncs(L, name##_lib, 0); lua_pushvalue(L, -1); lua_setfield(L, -2, "__index"); lua_rawset(L, -3);
 
 int luaopen_wtk(lua_State* L) {
 	lua_newtable(L);
-  luaL_newclass(L, system);
-  luaL_newclass(L, countdown);
-  luaL_newclass(L, loop);
+  luaW_newclass(L, system);
+  luaW_newclass(L, countdown);
+  luaW_newclass(L, loop);
   const char* init_code = "local wtk = ...\n\
   wtk.Loop = wtk.loop\n\
   package.loaded['wtk.loop'] = wtk.loop\n\
@@ -294,3 +303,111 @@ int luaopen_wtk(lua_State* L) {
   lua_call(L, 1, 0);
   return 1;
 }
+
+#ifdef WTK_MAKE_PACKER
+	// used to pack files into a single C file
+	// usage: [ ! -f packer ] && $CC ../../src/wtk.c -DMAKE_PACKER -o packer -lm && ./packer *.lua > packed.c
+	int main(int argc, char* argv[]) {
+		lua_State* L = luaL_newstate();
+		luaL_openlibs(L);
+		if (luaL_loadstring(L, "\n\
+			print('const char* luaW_packed[] = {') \n\
+			for i,file in ipairs({ ... }) do \n\
+				io.stderr:write('Packing ' .. file .. '...\\n')\n\
+				local f, err = load(io.lines(file,'L'), '='..file)\n\
+				if not f then error('Error packing ' .. file .. ': ' .. err) end\n\
+				cont = string.dump(f):gsub('.',function(c) return string.format('\\\\x%02X',string.byte(c)) end) \n\
+				print('\t\\\"'..file:gsub('/', '.'):gsub('%.lua$', '') ..'\\\",\\\"'..cont..'\\\",(void*)'..math.floor(#cont/3)..',')\n\
+			end\n\
+			print(\"(void*)0, (void*)0, (void*)0\\n};\")")
+		) {
+			fprintf(stderr, "Error loading packer: %s\n", lua_tostring(L, -1));
+			return -1;
+		}
+		for (int i = 1; i < argc; ++i)
+			lua_pushstring(L, argv[i]);
+		if (lua_pcall(L, argc - 1, 0, 0)) {
+			fprintf(stderr, "Error running packer: %s\n", lua_tostring(L, -1));
+			return -1;
+		}
+		return 0;
+	}
+	#define main main_
+#endif
+
+#ifdef WTK_PACKED
+  #include "packed.c"
+	int luaW_packlua(lua_State* L) {
+		lua_getglobal(L, "package");
+		lua_getfield(L, -1, "preload");
+		for (int i = 0; luaW_packed[i]; i += 3) {
+			if (luaL_loadbuffer(L, luaW_packed[i+1], (size_t)luaW_packed[i+2], luaW_packed[i])) {
+				lua_pushfstring(L, "error loading %s: %s", luaW_packed[i], lua_tostring(L, -1));
+				return -1;
+			}
+			lua_setfield(L, -2, luaW_packed[i]);
+		}
+		lua_pop(L, 1);
+		return 0;
+	}
+#else
+  int luaW_packlua(lua_State* L) { return 0; }
+#endif
+
+int luaW_loadlib(lua_State* L, const char* name, int(*load)(lua_State* L)) {
+	lua_getglobal(L, "package");
+  lua_getfield(L, -1, "preload");
+  lua_pushcfunction(L, load);
+  lua_setfield(L, -2, name);
+  lua_pop(L, 1);
+	return 0;
+}
+
+#define luaW_loadentry(L, init) luaL_loadbuffer(L, "(package.preload." init " or assert(loadfile(\"" init ".lua\")))(...)", sizeof("(package.preload." init " or assert(loadfile(\"" init ".lua\")))(...)")-1, "=luaW_loadentry")
+
+int luaW_run(lua_State* L, int argc, char* argv[]) {
+  for (int i = 1; i < argc; ++i) 
+    lua_pushstring(L, argv[i]);
+  return lua_pcall(L, argc - 1, LUA_MULTRET, 0);
+}
+
+#define MAX_LUAWLS 1024
+static lua_State* luaWLs[MAX_LUAWLS] = {0};
+
+static void luaW_exitsignal(int sig) {
+	for (int i = 0; i < MAX_LUAWLS; ++i) {
+		if (luaWLs[i]) {
+			lua_State* L = luaWLs[i];
+			luaWLs[i] = NULL;
+			lua_close(L);
+		}
+  }
+  exit(0);
+}
+
+static int luaW_signalgc(lua_State* L){
+	for (int i = 0; i < MAX_LUAWLS; ++i) {
+		if (luaWLs[i] == L)
+			luaWLs[i] = NULL;
+  }
+}
+
+int luaW_signal(lua_State* L) {
+	int i = 0;
+  for (i = 0; i < MAX_LUAWLS && luaWLs[i]; ++i);
+  if (i == MAX_LUAWLS) {
+		lua_pushstring(L, "error signaling lua: too many luas");
+		return -1;
+	}
+	luaWLs[i] = L;
+  signal(SIGINT, luaW_exitsignal);
+  signal(SIGTERM, luaW_exitsignal);
+  lua_newtable(L);
+  lua_newtable(L);
+  lua_pushcfunction(L, luaW_signalgc);
+  lua_setfield(L, -2, "__gc");
+  lua_setmetatable(L, -2);
+  luaL_ref(L, LUA_REGISTRYINDEX);
+  return 0;
+}
+
