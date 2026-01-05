@@ -27,8 +27,6 @@ typedef struct { int fd; int peer; } socket_t;
 static int imin(int a, int b) { return a < b ? a : b; }
 static int imax(int a, int b) { return a > b ? a : b; }
 
-#define lua_newobject(L, name) lua_newuserdata(L, sizeof(name##_t)); luaL_setmetatable(L, "wtk.server." #name);
-
 static char base64_encode[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 static int f_base64_decode(lua_State* L) {
 	static int base64_decode[256] = {0};
@@ -251,7 +249,8 @@ static int f_socket_bind(lua_State *L) {
   struct sockaddr_in in_bind_addr = {0};
   struct sockaddr_un un_bind_addr = {0};
   size_t addr_len = 0;
-  socket_t* sock = lua_newobject(L, socket);
+  socket_t* sock = lua_newuserdata(L, sizeof(socket_t)); 
+  luaL_setmetatable(L, "wtk.server.socket");
   memset(sock, 0, sizeof(socket_t));
   const char* host = luaL_checkstring(L, 1);
   if (strncmp(host, "unix://", 7) == 0) {

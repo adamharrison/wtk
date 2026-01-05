@@ -652,6 +652,8 @@ typedef struct {
 
     int decode_invalid_numbers;
     int decode_max_depth;
+
+    int empty_object_rid;
 } json_config_t;
 
 typedef struct {
@@ -1052,6 +1054,8 @@ static int lua_array_length(lua_State *l, json_config_t *cfg, strbuf_t *json)
 
         return -1;
     }
+    if (max == 0 && lua_rawequal(l, -1, lua_upvalueindex(2)))
+        return -1;
 
     return max;
 }
@@ -1182,12 +1186,9 @@ static void json_append_object(lua_State *l, json_config_t *cfg,
         lua_pop(l, 1);
         /* table, key */
     }
-    if (!comma) {
-        strbuf_append_char(json, '[');
-        strbuf_append_char(json, ']');
-    } else {
-        strbuf_append_char(json, '}');
-    }
+    if (!comma)
+        strbuf_append_char(json, '{');
+    strbuf_append_char(json, '}');
 }
 
 /* Serialise Lua data into JSON string. */
@@ -1213,7 +1214,7 @@ static void json_append_data(lua_State *l, json_config_t *cfg,
         current_depth++;
         json_check_encode_depth(l, cfg, current_depth, json);
         len = lua_array_length(l, cfg, json);
-        if (len > 0)
+        if (len >= 0)
             json_append_array(l, cfg, current_depth, json, len);
         else
             json_append_object(l, cfg, current_depth, json);
@@ -1224,9 +1225,6 @@ static void json_append_data(lua_State *l, json_config_t *cfg,
     case LUA_TLIGHTUSERDATA:
         if (lua_touserdata(l, -1) == NULL) {
             strbuf_append_mem(json, "null", 4);
-            break;
-        } else if (lua_touserdata(l, -1) == (void*)1) {
-            strbuf_append_mem(json, "[]", 2);
             break;
         }
     default:
@@ -1681,7 +1679,7 @@ static void json_parse_object_context(lua_State *l, json_parse_t *json)
 
     /* Handle empty objects */
     if (token.type == T_OBJ_END) {
-        lua_pushlightuserdata(l, (void*)0x1);
+        lua_pushvalue(l, lua_upvalueindex(2));
         json_decode_ascend(json);
         return;
     }
@@ -1897,17 +1895,23 @@ static int lua_cjson_new(lua_State *l)
     /* Initialise number conversions */
     fpconv_init();
 
+
+    /* cjson empty object as upvalue */
+    lua_newtable(l);
     /* cjson module table */
     lua_newtable(l);
-
+    
     /* Register functions with config data as upvalue */
     json_create_config(l);
-    luaL_setfuncs(l, reg, 1);
+    lua_pushvalue(l, -3);
+    luaL_setfuncs(l, reg, 2);
+    
 
     /* Set cjson.null */
     lua_pushlightuserdata(l, NULL);
     lua_setfield(l, -2, "null");
-    lua_pushlightuserdata(l, (void*)1);
+    /* Set cjson.empty_object */
+    lua_pushvalue(l, -2);
     lua_setfield(l, -2, "empty_object");
 
     /* Set module name / version fields */
