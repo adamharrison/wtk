@@ -250,7 +250,7 @@ static int f_socket_bind(lua_State *L) {
   struct sockaddr_un un_bind_addr = {0};
   size_t addr_len = 0;
   socket_t* sock = lua_newuserdata(L, sizeof(socket_t)); 
-  luaL_setmetatable(L, "wtk.server.socket");
+  luaL_setmetatable(L, "wtk.server.c.socket");
   memset(sock, 0, sizeof(socket_t));
   const char* host = luaL_checkstring(L, 1);
   if (strncmp(host, "unix://", 7) == 0) {
@@ -285,7 +285,7 @@ static int f_socket_bind(lua_State *L) {
 static int f_socket_accept(lua_State* L) {
   struct sockaddr_in peer_addr = {0};
   socklen_t peer_addr_len = sizeof(peer_addr);
-  socket_t* sock = luaL_checkudata(L, 1, "wtk.server.socket");
+  socket_t* sock = luaL_checkudata(L, 1, "wtk.server.c.socket");
   int fd = accept(sock->fd, (struct sockaddr*)&peer_addr, &peer_addr_len);
   int flags = fcntl(fd, F_GETFL, 0);
 	if (flags == -1 || fcntl(fd, F_SETFL, (flags | O_NONBLOCK)) == -1) 
@@ -293,14 +293,14 @@ static int f_socket_accept(lua_State* L) {
   socket_t* peer = lua_newuserdata(L, sizeof(socket_t));
   peer->fd = fd;
   peer->peer = 1;
-  luaL_setmetatable(L, "wtk.server.socket");
+  luaL_setmetatable(L, "wtk.server.c.socket");
   return 1;
 }
 
 static int f_socket_peer(lua_State* L) {
 	char peer_addr[imax(sizeof(struct sockaddr_in), sizeof(struct sockaddr_un))];
   socklen_t peer_addr_len = sizeof(peer_addr);
-  socket_t* sock = luaL_checkudata(L, 1, "wtk.server.socket");
+  socket_t* sock = luaL_checkudata(L, 1, "wtk.server.c.socket");
   if (getsockname(sock->fd, (struct sockaddr*)&peer_addr, &peer_addr_len))
 		return luaL_error(L, "error retrieving address: %s", strerror(errno));
   if (((struct sockaddr*)peer_addr)->sa_family == AF_INET) {
@@ -317,7 +317,7 @@ static int f_socket_peer(lua_State* L) {
 }
 
 static int f_socket_close(lua_State* L) {
-  socket_t* sock = luaL_checkudata(L, 1, "wtk.server.socket");
+  socket_t* sock = luaL_checkudata(L, 1, "wtk.server.c.socket");
   if (sock->fd) {
 		if (!sock->peer) {
 			struct sockaddr_un peer_addr = {0};
@@ -332,7 +332,7 @@ static int f_socket_close(lua_State* L) {
 }
 
 static int f_socket_recv(lua_State* L) {
-  socket_t* sock = luaL_checkudata(L, 1, "wtk.server.socket");
+  socket_t* sock = luaL_checkudata(L, 1, "wtk.server.c.socket");
   int bytes = luaL_checkinteger(L, 2), length = 0, total_received = 0;
   int err = 0;
   luaL_Buffer buffer;
@@ -364,7 +364,7 @@ static int f_socket_recv(lua_State* L) {
 }
 
 static int f_socket_send(lua_State* L) {
-  socket_t* sock = luaL_checkudata(L, 1, "wtk.server.socket");
+  socket_t* sock = luaL_checkudata(L, 1, "wtk.server.c.socket");
   size_t packet_length;
   const char* packet = luaL_checklstring(L, 2, &packet_length);
   int res = send(sock->fd, packet, packet_length, 0);
@@ -397,9 +397,9 @@ static const luaL_Reg socket_lib[] = {
   { NULL,        NULL }
 };
 
-#define luaL_newclass(L, name) lua_pushliteral(L, #name); luaL_newmetatable(L, "wtk.server." #name); luaL_setfuncs(L, name##_lib, 0); lua_pushvalue(L, -1); lua_setfield(L, -2, "__index"); lua_rawset(L, -3);
+#define luaL_newclass(L, name) lua_pushliteral(L, #name); luaL_newmetatable(L, "wtk.server.c." #name); luaL_setfuncs(L, name##_lib, 0); lua_pushvalue(L, -1); lua_setfield(L, -2, "__index"); lua_rawset(L, -3);
 
-int luaopen_wtk_server_driver(lua_State* L) {
+int luaopen_wtk_server_c(lua_State* L) {
 	lua_newtable(L);
   luaL_newclass(L, socket);
   luaL_newclass(L, sha1);

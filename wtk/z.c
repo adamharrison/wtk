@@ -9560,7 +9560,7 @@ static const luaL_Reg f_z_api[] = {
     { NULL,        NULL             }
 };
 
-int luaopen_wtk_z(lua_State* L) {
+int luaopen_wtk_z_c(lua_State* L) {
     lua_newtable(L);
     luaL_setfuncs(L, f_z_api, 0);
     lua_pushvalue(L, -1);

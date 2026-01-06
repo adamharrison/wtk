@@ -1,6 +1,6 @@
-local wtk = require "wtk"
-local system = require "wtk.system"
-local json = require "wtk.json"
+local wtk = require "wtk.c"
+local system = require "wtk.c.system"
+local json = require "wtk.json.c"
 
 --[[
 The following strings should be translated int he following actions
@@ -706,4 +706,4 @@ xpcall(function()
 end, function(err)
   io.stderr:write(debug.traceback(err, 2) .. "\n")
 end)
-os.exit(0) -- don't bother cleaning up cleanly
+os.exit(0) -- don't bother cleaning up cleanly*/

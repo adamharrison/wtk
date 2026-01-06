@@ -1,4 +1,7 @@
-#!/bin/sh
-[ "$CC" = "" ] && CC=gcc
-([ -f packer ] || gcc wtk.c -DWTK_BUNDLED_LUA -DWTK_MAKE_PACKER -o packer -lm) && ./packer *.lua > packed.c
-$CC -DWTK_PACKED -DWTK_BUNDLED_LUA -DWTKJQ_VERSION='"1.0"' $@ main.c -lm  -static -o wtkjq
+#!/bin/bash
+CFLAGS="$CFLAGS -I. -I../../wtk"
+[[ "$CC" == "" ]] && CC=gcc
+[[ "$@" == "clean" ]] && { rm -f packer packed.lua.c wtkjq; exit 0; }
+[[ "$@" != *"-g" && "$@" != "-O" ]] && CFLAGS="$CFLAGS -O2 -s"
+[[ "$@" != *"-DWTK_UNPACKED"* ]] && { [ -f packer ] || gcc $CFLAGS main.c $@ -DWTK_MAKE_PACKER -o packer -lm; } && ./packer *.lua > packed.lua.c
+$CC $CFLAGS -DWTKJQ_VERSION='"1.0"' main.c $@ -lm -o wtkjq

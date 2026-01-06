@@ -97,18 +97,19 @@ directory, and using the following build script and `main.c`:
 
 ```bash
 #!/bin/sh
-: ${CC=musl-gcc}
-: ${CFLAGS=-O3 -s}
-: ${BIN=server}
-[ "$@" == "clean" ] && rm -rf packed.c packer lua $BIN && exit 0
-[ ! -e "packer" ]] && gcc -DMAKE_PACKER -DBUNDLED_LUA lib/wtk/src/wtk.c -o packer -lm
+[ "$CC" = "" ] && CC=musl-gcc
+[ "$CFLAGS" = "" ] && CFLAGS="-O3 -s"
+[ "$BIN" = "" ] && BIN=server
+[ "$@" == "clean" ] && rm -rf packed.c packer $BIN && exit 0
+([ -f packer ] || gcc wtk.c -DWTK_BUNDLED_LUA -DWTK_MAKE_PACKER -o packer -lm) && ./packer *.lua > packed.c
 [ ! -e "packed.c" ] && ./packer *.lua > packed.c
-$CC $CFLAGS -DBUNDLED_LUA -Ilib/wtk/src -Ilib/wtk/src/lua *.c -lm -o $BIN -static $@
+$CC -DWTK_PACKED -DWTK_BUNDLED_LUA $@ main.c -lm  -static -o wtkjq
 ```
 
 ```c
-#include <wtk.c>
-#include <server/server.c>
+#include "wtk.c"
+#include "server.c"
+#include <stdio.h>
 
 int main(int argc, char* argv[]) {
   lua_State* L = luaL_newstate();
@@ -154,6 +155,24 @@ CMD ["./dawoot", "--port=80"]
 
 Although this will grealty increase the size of the container to about `167MB`, so if you are on a limited
 server, you may wish to compile locally.
+
+## Conventions
+
+* All modules can be either dynamically linked with `require`, statically linked with in the build, or `#include`d into a program.
+* By default, your build should always `-I.`, and either `-I<path_to_wtk>`, or symlink the relevant modules into your `src` directory, in that order.
+* Most applications should be a single `main.c` file, and a single `packed.c` file, generated from the packer of all your lua files; with at least `init.lua` existing.
+* Most build scripts should be able to function like the following, only purely bash.
+* All lua modules are accessible via `wtk.<module_name>`. All C modules are available via `wtk.<module_name>.c`.
+* Any submodules (i.e. part of the same module) are as follows: `wtk.<module_name>(.c).<submodule_name>`.
+
+```bash
+./build.sh clean # Resets all files.
+./build.sh `pkg-config lua5.4 --cflags --libs` -DWTK_SYSTEM_LUA -DWTK_UNPACKED # Builds with system lua, -O2 -s, local lua files.
+./build.sh -g -DWTK_UNPACKED # Builds with static lua, -g, local lua files.
+./build.sh # Builds with static lua, -O2 -s, lua files bundled into executable.
+./build.sh -static # Completely static build.
+./build.sh -g # Builds a debug build.
+```
 
 ## Utilities
 

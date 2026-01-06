@@ -16,6 +16,6 @@ source = {
 build = {
    type = "builtin",
    modules = {
-      ["wtk.json"] = { sources = {"src/json.c"} }
+      ["wtk.json.c"] = { sources = {"src/json.c"} }
    }
 }

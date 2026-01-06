@@ -406,7 +406,7 @@ static const luaL_Reg f_mysql_api[] = {
   { NULL,        NULL                       }
 };
 
-int luaopen_wtk_dbix_dbd_mysql(lua_State* L) {
+int luaopen_wtk_dbix_dbd_mysql_c(lua_State* L) {
   lua_newtable(L);
   luaL_setfuncs(L, f_mysql_api, 0);
   lua_pushvalue(L, -1);

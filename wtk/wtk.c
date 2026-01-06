@@ -1,4 +1,4 @@
-#ifdef WTK_BUNDLED_LUA
+#ifndef WTK_SYSTEM_LUA
 	#include "lua.c"
 #endif
 #ifndef lua_h
@@ -12,8 +12,10 @@
 #endif
 #include <math.h>
 #include <string.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <errno.h>
+#include <signal.h>
 #include <fcntl.h>
 #include <sys/epoll.h>
 #include <sys/timerfd.h>
@@ -135,7 +137,7 @@ static int f_loop_run(lua_State* L) {
 			lua_pushinteger(L, events[n].data.fd);
 			lua_rawget(L, -2);
 			lua_rawgeti(L, -1, 2);
-			countdown_t* countdown = luaL_testudata(L, -1, "wtk.server.countdown");
+			countdown_t* countdown = luaL_testudata(L, -1, "wtk.c.countdown");
 			if (countdown) {
 				long long length;
 				read(countdown->fd, &length, sizeof(length));
@@ -222,7 +224,7 @@ static int f_countdown_new(lua_State* L) {
 }
 
 static int f_countdown_gc(lua_State* L) {
-  countdown_t* countdown = luaL_checkudata(L, 1, "wtk.server.socket");
+  countdown_t* countdown = luaL_checkudata(L, 1, "wtk.c.countdown");
   if (countdown->fd)
 		close(countdown->fd);
 }
@@ -234,17 +236,17 @@ static const luaL_Reg countdown_lib[] = {
 };
 
 
-#define luaW_newclass(L, name) lua_pushliteral(L, #name); luaL_newmetatable(L, "wtk." #name); luaL_setfuncs(L, name##_lib, 0); lua_pushvalue(L, -1); lua_setfield(L, -2, "__index"); lua_rawset(L, -3);
+#define luaW_newclass(L, name) lua_pushliteral(L, #name), luaL_newmetatable(L, "wtk.c." #name), luaL_setfuncs(L, name##_lib, 0), lua_pushvalue(L, -1), lua_setfield(L, -2, "__index"), lua_rawset(L, -3)
 
-int luaopen_wtk(lua_State* L) {
+int luaopen_wtk_c(lua_State* L) {
 	lua_newtable(L);
   luaW_newclass(L, system);
   luaW_newclass(L, countdown);
   luaW_newclass(L, loop);
   const char* init_code = "local wtk = ...\n\
   wtk.Loop = wtk.loop\n\
-  package.loaded['wtk.loop'] = wtk.loop\n\
-  package.loaded['wtk.system'] = wtk.system\n\
+  package.loaded['wtk.c.loop'] = wtk.loop\n\
+  package.loaded['wtk.c.system'] = wtk.system\n\
 	function wtk.pargs(arguments, options, short_options)\n\
 		local args = {}\n\
 		local i = 1\n\
@@ -311,7 +313,7 @@ int luaopen_wtk(lua_State* L) {
 		lua_State* L = luaL_newstate();
 		luaL_openlibs(L);
 		if (luaL_loadstring(L, "\n\
-			print('const char* luaW_packed[] = {') \n\
+			print('#define WTK_PACKED\\nconst char* luaW_packed[] = {') \n\
 			for i,file in ipairs({ ... }) do \n\
 				io.stderr:write('Packing ' .. file .. '...\\n')\n\
 				local f, err = load(io.lines(file,'L'), '='..file)\n\
@@ -332,14 +334,12 @@ int luaopen_wtk(lua_State* L) {
 		}
 		return 0;
 	}
+	int luaW_packlua(lua_State* L) { return 0; }
 	#define main main_
-#endif
-
-#ifdef WTK_PACKED
-  #include "packed.c"
+#else
+	#include <packed.lua.c>
 	int luaW_packlua(lua_State* L) {
-		lua_getglobal(L, "package");
-		lua_getfield(L, -1, "preload");
+		lua_getfield(L, LUA_REGISTRYINDEX, LUA_PRELOAD_TABLE);
 		for (int i = 0; luaW_packed[i]; i += 3) {
 			if (luaL_loadbuffer(L, luaW_packed[i+1], (size_t)luaW_packed[i+2], luaW_packed[i])) {
 				lua_pushfstring(L, "error loading %s: %s", luaW_packed[i], lua_tostring(L, -1));
@@ -350,18 +350,8 @@ int luaopen_wtk(lua_State* L) {
 		lua_pop(L, 1);
 		return 0;
 	}
-#else
-  int luaW_packlua(lua_State* L) { return 0; }
 #endif
 
-int luaW_loadlib(lua_State* L, const char* name, int(*load)(lua_State* L)) {
-	lua_getglobal(L, "package");
-  lua_getfield(L, -1, "preload");
-  lua_pushcfunction(L, load);
-  lua_setfield(L, -2, name);
-  lua_pop(L, 1);
-	return 0;
-}
 
 #define luaW_loadentry(L, init) luaL_loadbuffer(L, "(package.preload." init " or assert(loadfile(\"" init ".lua\")))(...)", sizeof("(package.preload." init " or assert(loadfile(\"" init ".lua\")))(...)")-1, "=luaW_loadentry")
 

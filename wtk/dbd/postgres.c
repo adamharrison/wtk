@@ -433,7 +433,7 @@ static const luaL_Reg f_postgres_api[] = {
   { NULL,        NULL                       }
 };
 
-int luaopen_wtk_dbix_dbd_postgres(lua_State* L) {
+int luaopen_wtk_dbix_dbd_postgres_c(lua_State* L) {
   lua_newtable(L);
   luaL_setfuncs(L, f_postgres_api, 0);
   lua_pushvalue(L, -1);
