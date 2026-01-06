@@ -1944,7 +1944,7 @@ static int lua_cjson_safe_new(lua_State *l)
     return 1;
 }
 
-CJSON_EXPORT int luaopen_wtk_json(lua_State *l)
+CJSON_EXPORT int luaopen_wtk_json_c(lua_State *l)
 {
     lua_cjson_new(l);
 

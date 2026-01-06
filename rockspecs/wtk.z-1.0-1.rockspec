@@ -16,6 +16,6 @@ source = {
 build = {
    type = "builtin",
    modules = {
-      ["wtk.z"] = { sources = {"src/z.c"} }
+      ["wtk.z.c"] = { sources = {"src/z.c"} }
    }
 }

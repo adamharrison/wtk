@@ -290,7 +290,7 @@ static const luaL_Reg f_sqlite3_api[] = {
   { NULL,        NULL                         }
 };
 
-int luaopen_wtk_dbix_dbd_sqlite3(lua_State* L) {
+int luaopen_wtk_dbix_dbd_sqlite3_c(lua_State* L) {
   lua_newtable(L);
   luaL_setfuncs(L, f_sqlite3_api, 0);
   lua_pushvalue(L, -1);

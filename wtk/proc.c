@@ -24,7 +24,7 @@ static int f_stream_new(lua_State* L, int fd) {
     lua_newtable(L);
     lua_pushinteger(L, fd);
     lua_setfield(L, -2, "fd");
-    luaL_setmetatable(L, "wtk.proc.stream");
+    luaL_setmetatable(L, "wtk.proc.c.stream");
     return 1;
 }
 
@@ -158,7 +158,7 @@ static int f_proc_new(lua_State* L) {
     lua_pushvalue(L, -2);
     lua_setfield(L, -2, "proc");
     lua_setfield(L, -2, "stdin");
-    luaL_setmetatable(L, "wtk.proc");
+    luaL_setmetatable(L, "wtk.proc.c");
     return 1;
 }
 
@@ -208,9 +208,9 @@ static const luaL_Reg f_proc_api[] = {
 };
 
 int luaopen_wtk_proc(lua_State* L) {
-    luaL_newmetatable(L, "wtk.proc");
+    luaL_newmetatable(L, "wtk.proc.c");
     luaL_setfuncs(L, f_proc_api, 0);
-    luaL_newmetatable(L, "wtk.proc.stream");
+    luaL_newmetatable(L, "wtk.proc.c.stream");
     luaL_setfuncs(L, f_stream_api, 0);
     const char* lua_stream_code = "\n\
     local proc, stream = ...\n\

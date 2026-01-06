@@ -1,4 +1,4 @@
 *.so
 *.o
-packed.c
+packed.lua.c
 utilities/wtkjq/wtkjq
