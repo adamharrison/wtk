@@ -1,6 +1,6 @@
 -- We go for simplicity above all else.
-local wtk = require "wtk"
-local driver = require "wtk.server.driver"
+local wtk = require "wtk.c"
+local driver = require "wtk.server.c"
 local system = wtk.system
 local socket, sha1, base64 = driver.socket, driver.sha1, driver.base64
 local PACKET_SIZE = 4096

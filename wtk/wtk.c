@@ -34,7 +34,7 @@ static int f_loop_new(lua_State* L) {
 	lua_pushinteger(L, epollfd); lua_setfield(L, -2, "epollfd");
 	lua_newtable(L); lua_setfield(L, -2, "fds");
 	lua_newtable(L); lua_setfield(L, -2, "deferred");
-	luaL_setmetatable(L, "wtk.loop");
+	luaL_setmetatable(L, "wtk.c.loop");
   return 1;
 }
 
@@ -140,7 +140,7 @@ static int f_loop_run(lua_State* L) {
 			countdown_t* countdown = luaL_testudata(L, -1, "wtk.c.countdown");
 			if (countdown) {
 				long long length;
-				read(countdown->fd, &length, sizeof(length));
+				length = read(countdown->fd, &length, sizeof(length));
 			}
 			lua_pop(L, 1);
 			lua_rawgeti(L, -1, 1);
@@ -245,6 +245,7 @@ int luaopen_wtk_c(lua_State* L) {
   luaW_newclass(L, loop);
   const char* init_code = "local wtk = ...\n\
   wtk.Loop = wtk.loop\n\
+  package.loaded['wtk'] = wtk\n\
   package.loaded['wtk.c.loop'] = wtk.loop\n\
   package.loaded['wtk.c.system'] = wtk.system\n\
 	function wtk.pargs(arguments, options, short_options)\n\
@@ -315,11 +316,12 @@ int luaopen_wtk_c(lua_State* L) {
 		if (luaL_loadstring(L, "\n\
 			print('#define WTK_PACKED\\nconst char* luaW_packed[] = {') \n\
 			for i,file in ipairs({ ... }) do \n\
-				io.stderr:write('Packing ' .. file .. '...\\n')\n\
-				local f, err = load(io.lines(file,'L'), '='..file)\n\
-				if not f then error('Error packing ' .. file .. ': ' .. err) end\n\
+				local package = file:gsub('/', '.'):gsub('.*wtk', 'wtk'):gsub('%.lua$', '')\n\
+				io.stderr:write('Packing ' .. file .. ' (' .. package .. ')...\\n')\n\
+				local f, err = load(io.lines(file,'L'), '='..package)\n\
+				if not f then error('Error packing ' .. file .. ' (' .. package .. '): ' .. err) end\n\
 				cont = string.dump(f):gsub('.',function(c) return string.format('\\\\x%02X',string.byte(c)) end) \n\
-				print('\t\\\"'..file:gsub('/', '.'):gsub('%.lua$', '') ..'\\\",\\\"'..cont..'\\\",(void*)'..math.floor(#cont/3)..',')\n\
+				print('\t\\\"'..file:gsub('/', '.'):gsub('.*wtk', 'wtk'):gsub('%.lua$', '') ..'\\\",\\\"'..cont..'\\\",(void*)'..math.floor(#cont/3)..',')\n\
 			end\n\
 			print(\"(void*)0, (void*)0, (void*)0\\n};\")")
 		) {
@@ -348,6 +350,14 @@ int luaopen_wtk_c(lua_State* L) {
 			lua_setfield(L, -2, luaW_packed[i]);
 		}
 		lua_pop(L, 1);
+		#ifdef WTK_UNPACKED
+			lua_getglobal(L, "package");
+			lua_pushliteral(L, "./?.lua;./?/init.lua;");
+			lua_getfield(L, -2, "path");
+			lua_concat(L, 2);
+			lua_setfield(L, -2, "path");
+			lua_pop(L, 1);
+		#endif
 		return 0;
 	}
 #endif
