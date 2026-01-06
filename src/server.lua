@@ -434,7 +434,7 @@ function Server.log:warn(message, ...) self:log("WARN", message, ...) end
 
 function Server:hot_reload(loop, file, options)
   if not system.mtime(file) then return self.log:warn("Can't find " .. file .. ", so cannot hot reload.") end
-  local old_modified = system.mtime(file)
+  local old_modified = not package.preload.init and system.mtime(file) or 0
   loop:add(wtk.countdown.new(0, 0.25), function()
     if old_modified < system.mtime(file) then
       local status, err = pcall(function()
