@@ -11249,7 +11249,7 @@ typedef enum socket_state_e {
   STATE_CLOSED
 } socket_state_e;
 
-typedef struct socket_t {
+typedef struct client_socket_t {
   int fd;
   int is_ssl;
   int blocking;
@@ -11260,7 +11260,7 @@ typedef struct socket_t {
   mbedtls_net_context net_context;
   mbedtls_ssl_context ssl_context;
   time_t last_activity;
-} socket_t;
+} client_socket_t;
 
 static int imin(int a, int b) { return a < b ? a : b; }
 
@@ -11290,7 +11290,7 @@ static int socket_yield(lua_State* L, int fd, const char* type, lua_KFunction k)
   lua_yieldk(L, 1, 0, k);
 }
 
-static int socket_set_blocking(socket_t* c, int blocking) {
+static int socket_set_blocking(client_socket_t* c, int blocking) {
   if (blocking != c->blocking) {
     c->blocking = blocking;
     if (blocking) {    
@@ -11312,9 +11312,9 @@ static int socket_set_blocking(socket_t* c, int blocking) {
   return 0;
 }
 
-static int f_socket_recvk(lua_State* L, int status, lua_KContext ctx) {
+static int f_client_socket_recvk(lua_State* L, int status, lua_KContext ctx) {
   lua_getfield(L, 1, "__c");
-  socket_t* socket = lua_touserdata(L, -1);
+  client_socket_t* socket = lua_touserdata(L, -1);
   lua_pop(L, 1);
   if (socket->state != STATE_READY)
     return 0;
@@ -11326,7 +11326,7 @@ static int f_socket_recvk(lua_State* L, int status, lua_KContext ctx) {
   if (socket->is_ssl) {
     recvd = mbedtls_ssl_read(&socket->ssl_context, (unsigned char*)buf, imin(bytes, sizeof(buf)));
     if (recvd == MBEDTLS_ERR_SSL_WANT_READ || recvd == MBEDTLS_ERR_SSL_WANT_WRITE)
-      return socket_yield(L, socket->fd, recvd == MBEDTLS_ERR_SSL_WANT_WRITE ? "write" : "read", f_socket_recvk);
+      return socket_yield(L, socket->fd, recvd == MBEDTLS_ERR_SSL_WANT_WRITE ? "write" : "read", f_client_socket_recvk);
     if (recvd == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) {
       socket->state = STATE_CLOSED;
       return 0;
@@ -11338,16 +11338,16 @@ static int f_socket_recvk(lua_State* L, int status, lua_KContext ctx) {
       return 0;
     }
     if (recvd == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
-      return socket_yield(L, socket->fd, "read", f_socket_recvk);
+      return socket_yield(L, socket->fd, "read", f_client_socket_recvk);
   }
   lua_pushlstring(L, buf, recvd);
   return 1;
 }
-static int f_socket_recv(lua_State* L) { return f_socket_recvk(L, 0, 0); }
+static int f_client_socket_recv(lua_State* L) { return f_client_socket_recvk(L, 0, 0); }
 
-static int f_socket_sendk(lua_State* L, int status, lua_KContext ctx) {
+static int f_client_socket_sendk(lua_State* L, int status, lua_KContext ctx) {
   lua_getfield(L, 1, "__c");
-  socket_t* socket = lua_touserdata(L, -1);
+  client_socket_t* socket = lua_touserdata(L, -1);
   size_t len;
   if (socket->state != STATE_READY)
     return 0;
@@ -11358,7 +11358,7 @@ static int f_socket_sendk(lua_State* L, int status, lua_KContext ctx) {
   if (socket->is_ssl) {
     written = mbedtls_ssl_write(&socket->ssl_context, bytes, len);
     if (written == MBEDTLS_ERR_SSL_WANT_WRITE || written == MBEDTLS_ERR_SSL_WANT_READ)
-      return socket_yield(L, socket->fd, written == MBEDTLS_ERR_SSL_WANT_WRITE ? "write" : "read", f_socket_sendk);  
+      return socket_yield(L, socket->fd, written == MBEDTLS_ERR_SSL_WANT_WRITE ? "write" : "read", f_client_socket_sendk);  
     if (written == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) {
       socket->state = STATE_CLOSED;
       return 0;
@@ -11366,18 +11366,18 @@ static int f_socket_sendk(lua_State* L, int status, lua_KContext ctx) {
   } else {
     written = write(socket->fd, bytes, len);
     if (written == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
-      return socket_yield(L, socket->fd, "write", f_socket_sendk);
+      return socket_yield(L, socket->fd, "write", f_client_socket_sendk);
   }
   lua_pushinteger(L, written);
   return 1;
 }
-static int f_socket_send(lua_State* L) { return f_socket_sendk(L, 0, 0); }
+static int f_client_socket_send(lua_State* L) { return f_client_socket_sendk(L, 0, 0); }
 
 
 
-static int f_socket_openk(lua_State* L, int status, lua_KContext ctx) {
+static int f_client_socket_openk(lua_State* L, int status, lua_KContext ctx) {
   lua_getfield(L, 1, "__c");
-  socket_t* c = lua_touserdata(L, -1);
+  client_socket_t* c = lua_touserdata(L, -1);
   const char* protocol = luaL_checkstring(L, 2);
   const char* hostname = luaL_checkstring(L, 3);
   int port = luaL_checkinteger(L, 4);
@@ -11439,7 +11439,7 @@ static int f_socket_openk(lua_State* L, int status, lua_KContext ctx) {
                   type = "write";
                 else
                   type = "read";
-                return socket_yield(L, dns_res_pollfd(c->resolver), type, f_socket_openk);
+                return socket_yield(L, dns_res_pollfd(c->resolver), type, f_client_socket_openk);
               }
               dns_ai_poll(c->ai, 1);
               break;
@@ -11480,9 +11480,9 @@ static int f_socket_openk(lua_State* L, int status, lua_KContext ctx) {
         int status = mbedtls_ssl_handshake(&c->ssl_context);
         c->last_activity = time(NULL);
         if (status == MBEDTLS_ERR_SSL_WANT_READ)
-          return socket_yield(L, c->fd, "read", f_socket_openk);
+          return socket_yield(L, c->fd, "read", f_client_socket_openk);
         if (status == MBEDTLS_ERR_SSL_WANT_WRITE)
-          return socket_yield(L, c->fd, "write", f_socket_openk);
+          return socket_yield(L, c->fd, "write", f_client_socket_openk);
         if (status != 0) {
           mbedtls_snprintf(1, err, sizeof(err), status, "can't handshake with %s", hostname);
           break;
@@ -11504,21 +11504,21 @@ static int f_socket_openk(lua_State* L, int status, lua_KContext ctx) {
   return 1;
 }
 
-static int f_socket_open(lua_State* L) {
+static int f_client_socket_open(lua_State* L) {
   lua_newtable(L);
-  socket_t* c = calloc(sizeof(socket_t), 1);
+  client_socket_t* c = calloc(sizeof(client_socket_t), 1);
   lua_pushlightuserdata(L, c);
   lua_setfield(L, -2, "__c");
   lua_pushvalue(L, 1);
   lua_setmetatable(L, -2);
   lua_replace(L, 1);
-  return f_socket_openk(L, 0, 0);
+  return f_client_socket_openk(L, 0, 0);
 }
 
-static int f_socket_close(lua_State* L) {
+static int f_client_socket_close(lua_State* L) {
   lua_getfield(L, 1, "__c");
   if (!lua_isnil(L, -1)) {
-    socket_t* c = lua_touserdata(L, -1);
+    client_socket_t* c = lua_touserdata(L, -1);
     if (c->resolver)
       dns_res_close(c->resolver);
     if (c->ai)
@@ -11574,7 +11574,7 @@ static FILE* lua_fopen(lua_State* L, const char* path, const char* mode) {
 #endif
 
 
-static int f_socket_ssl(lua_State* L) {
+static int f_client_socket_ssl(lua_State* L) {
   char err[MAX_ERROR_SIZE] = {0};
   const char* type = luaL_checkstring(L, 1);
   int status;
@@ -11680,18 +11680,18 @@ static int f_socket_ssl(lua_State* L) {
 }
 
 static const luaL_Reg socket_lib[] = {
-  { "open",      f_socket_open   },
-  { "close",     f_socket_close  },
-  { "send",      f_socket_send   },
-  { "recv",      f_socket_recv   },
-  { "__gc",      f_socket_close  },
-  { "ssl",       f_socket_ssl    },
+  { "open",      f_client_socket_open   },
+  { "close",     f_client_socket_close  },
+  { "send",      f_client_socket_send   },
+  { "recv",      f_client_socket_recv   },
+  { "__gc",      f_client_socket_close  },
+  { "ssl",       f_client_socket_ssl    },
   { NULL,        NULL }
 };
 
 
 static int f_client_gc(lua_State* L) {
-  lua_pushcfunction(L, f_socket_ssl);
+  lua_pushcfunction(L, f_client_socket_ssl);
   lua_pushliteral(L, "none");
   lua_call(L, 1, 0);
   return 0;

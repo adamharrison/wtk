@@ -37,6 +37,7 @@ function cschema.new(connection, schema)
   self._connection = connection
   self._schema = schema
   self._c = connection._c
+  self._options = connection._options
   for i,v in ipairs(schema.tables) do
     self[v.name] = resultset.new(self, v)
   end
@@ -92,10 +93,25 @@ end
 function stable:has_many(t, name, self_columns, foreign_columns) table.insert(self.relationships, { name = name or t.plural, type = "has_many", self_columns = self_columns or { "id" }, foreign_table = t, foreign_columns = columns or { self.singular .. "_id" } }) end
 function stable:has_one(t, name, self_columns, foreign_columns) table.insert(self.relationships, { name = name or t.plural, type = "has_one", self_columns = self_columns or { "id" }, foreign_table = t, foreign_columns = columns or { self.singular .. "_id" } }) end
 
+function stable:validate_type(column, value)
+  if column then
+    if value then
+      if column.data_type:find("int") or column.data_type:find("decimal") or column.data_type:find("float") then
+        assert(tonumber(value) ~= nil, column.name .. " must be a number.")
+      elseif type(value) == 'string' and column.data_type:find("date") then
+        assert(value:find("^%d+%-%d+%-%d+"), column.name .. " must be a date.")
+      end
+    else
+      assert(not column.not_null, column.name .. " must be non-null.")
+    end
+  end
+end
+
+
 function connection.new(driver, options)
   local self = setmetatable({ }, connection)
   self._driver = assert(type(driver) == 'string' and require("wtk.dbix.dbd." .. driver .. ".c") or driver, "can't find driver " .. driver)
-  self._options = options or {}
+  self._options = merge({ validate_types = true }, options or {})
   self._log = os.getenv("DBIX_TRACE") and function(self, msg) io.stderr:write(msg, "\n") end or options.log or false
   self._c = assert(self._driver:connect(options))
   return self
@@ -407,6 +423,7 @@ function resultset:count()
   query:close()
   return count
 end
+
 function result.new(connection, table, row, rs) return setmetatable({ _connection = connection, _table = table, _row = row, _dirty = {}, _rs = rs }, result) end
 
 function result:__index(key)
@@ -450,6 +467,7 @@ function result:insert()
   local binds = {}
   for i = 1, #self._table.columns do
     if self._row[i] then
+      if self._connection._options.validate_types then self._table:validate_type(self._table.columns[i], v) end
       table.insert(columns, self._connection:escape(self._table.columns[i].name))
       table.insert(fields, self._connection:translate_value(self._row[i]))
       if type(self._row[i]) == 'table' and getmetatable(self._row[i]) == blob then
@@ -485,6 +503,7 @@ function result:update(params)
   local fields = {} 
   local binds = {}
   for k,v in pairs(params) do 
+    if self._connection._options.validate_types then self._table:validate_type(self._table.columns[k], v) end
     table.insert(fields, self._connection:escape(k) .. " = " .. self._connection:translate_value(v)) 
     if type(v) == 'table' and getmetatable(v) == blob then
       table.insert(binds, v)
@@ -525,6 +544,7 @@ function resultset:update(params)
   local updates = {}
   local binds = {}
   for k,v in pairs(params) do
+    if self._connection._options.validate_types then self._table:validate_type(self._table.columns[k], v) end
     table.insert(updates, self._connection:escape(k) .. " = " .. self._connection:translate_value(v))
     if type(v) == 'table' and getmetatable(v) == blob then
       table.insert(binds, v)

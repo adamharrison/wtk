@@ -9435,8 +9435,8 @@ typedef struct {
     char buffer[];
 } z_t;
 
-static int imin(int a, int b) { return a < b ? a : b; }
-static int imax(int a, int b) { return a > b ? a : b; }
+static int z_imin(int a, int b) { return a < b ? a : b; }
+static int z_imax(int a, int b) { return a > b ? a : b; }
 
 static int f_z_send(lua_State* L) {
     z_t* z = (z_t*)lua_touserdata(L, 1);
@@ -9444,7 +9444,7 @@ static int f_z_send(lua_State* L) {
     const char* packet = luaL_checklstring(L, 2, &packet_length);
     size_t offset = luaL_optinteger(L, 3, 1) - 1;
     size_t max_length = packet_length - offset;
-    size_t length = imin(luaL_optinteger(L, 4, max_length), max_length);
+    size_t length = z_imin(luaL_optinteger(L, 4, max_length), max_length);
     luaL_Buffer buffer;
     luaL_buffinit(L, &buffer);
     size_t current_offset = offset;
@@ -9453,7 +9453,7 @@ static int f_z_send(lua_State* L) {
     int remaining_length = length;
     while (remaining_length > 0) {
         int remaining_capacity = z->buffer_capacity - z->buffer_length;
-        int packet_processed = imin(remaining_capacity, remaining_length);
+        int packet_processed = z_imin(remaining_capacity, remaining_length);
         memcpy(&z->buffer[z->buffer_length], &packet[current_offset], packet_processed);
         z->buffer_length += packet_processed;
         current_offset += packet_processed;
@@ -9492,7 +9492,7 @@ int f_z_open(lua_State* L) {
         lua_pop(L, 1);
         lua_getfield(L, 3, "buffer");
         if (!lua_isnil(L, -1))
-            buffer_capacity = imax(luaL_checkinteger(L, -1), 8192);
+            buffer_capacity = z_imax(luaL_checkinteger(L, -1), 8192);
         lua_pop(L, 1);
     }
     z_t* z = lua_newuserdata(L, sizeof(z_t) + buffer_capacity);
