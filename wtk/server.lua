@@ -1,9 +1,11 @@
 -- We go for simplicity above all else.
-local driver = require "wtk.server.driver"
-local socket, loop, sha1, base64, system = driver.socket, driver.loop, driver.sha1, driver.base64, driver.system
+local wtk = require "wtk.c"
+local driver = require "wtk.server.c"
+local system = wtk.system
+local socket, sha1, base64 = driver.socket, driver.sha1, driver.base64
 local PACKET_SIZE = 4096
 
-local Server = { Loop = driver.loop, Socket = driver.socket, sha1 = driver.sha1, base64 = driver.base64, countdown = driver.countdown }
+local Server = { Socket = driver.socket, sha1 = driver.sha1, base64 = driver.base64 }
 Server.__index = Server
 
 
@@ -424,7 +426,7 @@ function Server:put(path, func) return self:route("PUT", path, func) end
 function Server:delete(path, func) return self:route("DELETE", path, func) end
 
 Server.log = {}
-function Server.log:log(type, message, ...) io.stdout:write(string.format("[%5s][%s.%03d]: " .. message .. "\n", type, os.date("%Y-%m-%dT%H:%M:%S"), (math.floor(system.time() * 1000.0) % 1000), ...)):flush() end
+function Server.log:log(type, message, ...) io.stdout:write(string.format("[%5s][%s.%03d]: " .. message .. "\n", type, os.date("%Y-%m-%dT%H:%M:%S"), (math.floor(wtk.system.time() * 1000.0) % 1000), ...)):flush() end
 function Server.log:verbose(message, ...) if self._verbose then self:log("VERB", message, ...) end end
 function Server.log:info(message, ...) self:log("INFO", message, ...) end
 function Server.log:error(message, ...) self:log("ERROR", message, ...) end
@@ -432,8 +434,8 @@ function Server.log:warn(message, ...) self:log("WARN", message, ...) end
 
 function Server:hot_reload(loop, file, options)
   if not system.mtime(file) then return self.log:warn("Can't find " .. file .. ", so cannot hot reload.") end
-  local old_modified = system.mtime(file)
-  loop:add(self.countdown.new(0, 0.25), function()
+  local old_modified = not package.preload.init and system.mtime(file) or 0
+  loop:add(wtk.countdown.new(0, 0.25), function()
     if old_modified < system.mtime(file) then
       local status, err = pcall(function()
         assert(load(io.open(file, "rb"):read("*all"), "=" .. file))()
@@ -457,39 +459,6 @@ function Server:console()
 end
 
 function Server.escapeURI(param) return param:gsub("[^A-Za-z0-9%-_%.%!~%*'%(%)]", function(e) return string.format("%%%02x", e:byte(1)) end) end
-function Server.pargs(arguments, options)
-  local args = {}
-  local i = 1
-  for k,v in pairs(arguments) do if math.type(k) ~= "integer" then args[k] = v end end
-  while i <= #arguments do
-    local s,e, option, value = arguments[i]:find("%-%-([^=]+)=?(.*)")
-    local option_name = s and (options[option] and option or option:gsub("^no%-", ""))
-    if options[option_name] then
-      local flag_type = options[option_name]
-      if flag_type == "flag" then
-        args[option] = (option_name == option or not option:find("^no-")) and true or false
-      elseif flag_type == "string" or flag_type == "number" or flag_type == "array" then
-        if not value or value == "" then
-          if i == #arguments then error("option " .. option .. " requires a " .. flag_type) end
-          value = arguments[i+1]
-          i = i + 1
-        end
-        if flag_type == "number" and tonumber(flag_type) == nil then error("option " .. option .. " should be a number") end
-        if flag_type == "array" then
-          args[option] = args[option] or {}
-          table.insert(args[option], value)
-        else
-          args[option] = value
-        end
-      end
-    else
-      table.insert(args, arguments[i])
-    end
-    i = i + 1
-  end
-  return args
-end
-
 
 
 return Server

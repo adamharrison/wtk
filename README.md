@@ -7,10 +7,11 @@ These are a bunch of non-blocking modules that can be easily packaged into a sin
 Here's an example of a non-blocking webserver server with a database connection.
 
 ```lua
+local wtk = require "wtk"
 local DBIX = require "wtk.dbix"
 local Server = require "wtk.server"
-local Loop = Server.Loop
-local Countdown = Server.Countdown
+local Loop = require "wtk.loop"
+local Countdown = require "wtk.countdown"
 local loop = Loop.new()
 local args = Server.pargs({ ... }, { host = "string", port = "integer", verbose = "flag", timeout = "integer",  })
 
@@ -95,48 +96,28 @@ this repository into your project, and then simply symlinking the relevant sourc
 directory, and using the following build script and `main.c`:
 
 ```bash
-: ${CC=musl-gcc}
-: ${CFLAGS=-O3 -s}
-: ${BIN=server}
-[[ "$@" == "clean" ]] && rm -rf packed.c lua $BIN && exit 0
-[[ ! -e "packed.c" && ! -e "lua" ]] && $CC lib/lua/onelua.c -o lua -lm
-[[ ! -e "packed.c" ]] && ./lua lib/lua-dbix/scripts/pack.lua *.lua > packed.c
-$CC -DMAKE_LIB=1 -Ilib/lua lib/lua/onelua.c *.c -lm -o $BIN -static  $@
+#!/bin/sh
+[ "$CC" = "" ] && CC=musl-gcc
+[ "$CFLAGS" = "" ] && CFLAGS="-O3 -s"
+[ "$BIN" = "" ] && BIN=server
+[ "$@" == "clean" ] && rm -rf packed.c packer $BIN && exit 0
+([ -f packer ] || gcc wtk.c -DWTK_BUNDLED_LUA -DWTK_MAKE_PACKER -o packer -lm) && ./packer *.lua > packed.c
+[ ! -e "packed.c" ] && ./packer *.lua > packed.c
+$CC -DWTK_PACKED -DWTK_BUNDLED_LUA $@ main.c -lm  -static -o wtkjq
 ```
 
 ```c
-#include <lua.h>
-#include <lualib.h>
-#include <lauxlib.h>
-
-#ifdef PACKED_LUA
-  extern const char* packed_luac[];
-#else
-  static const char* packed_luac[] = { NULL, NULL, NULL };
-#endif
-
-int luaopen_wtk_server_driver(lua_State* L);
+#include "wtk.c"
+#include "server.c"
+#include <stdio.h>
 
 int main(int argc, char* argv[]) {
   lua_State* L = luaL_newstate();
   luaL_openlibs(L);
-  lua_getglobal(L, "package");
-  lua_getfield(L, -1, "preload");
-  lua_pushcfunction(L, luaopen_wtk_server_driver);
-  lua_setfield(L, -2, "wtk.server.driver");
-  for (int i = 0; packed_luac[i]; i += 3) {
-    if (luaL_loadbuffer(L, packed_luac[i+1], (size_t)packed_luac[i+2], packed_luac[i])) {
-      fprintf(stderr, "Error loading %s: %s", packed_luac[i], lua_tostring(L, -1));
-      return -1;
-    }
-    lua_setfield(L, -2, packed_luac[i]);
-  }
-  lua_pop(L, 1);
-  luaL_loadstring(L, "(package.preload.init or loadfile(\"init.lua\"))(...)");
-  for (int i = 1; i < argc; ++i) 
-    lua_pushstring(L, argv[i]);
-  if (lua_pcall(L, argc - 1, LUA_MULTRET, 0))
+  if (luaW_signal(L) || luaW_packlua(L) || luaW_loadlib(L, "wtk", luaopen_wtk) || luaW_loadlib(L, "wtk.server.driver", luaopen_wtk_server_driver) || luaW_loadentry(L, "init") || luaW_run(L, argc, argv)) {
     fprintf(stderr, "error initializing server: %s\n", lua_tostring(L, -1));
+    return -1;
+  }
   lua_close(L);
   return 0;
 }
@@ -175,4 +156,29 @@ CMD ["./dawoot", "--port=80"]
 Although this will grealty increase the size of the container to about `167MB`, so if you are on a limited
 server, you may wish to compile locally.
 
+## Conventions
+
+* All modules can be either dynamically linked with `require`, statically linked with in the build, or `#include`d into a program.
+* By default, your build should always `-I.`, and either `-I<path_to_wtk>`, or symlink the relevant modules into your `src` directory, in that order.
+* Most applications should be a single `main.c` file, and a single `packed.c` file, generated from the packer of all your lua files; with at least `init.lua` existing.
+* Most build scripts should be able to function like the following, only purely bash.
+* All lua modules are accessible via `wtk.<module_name>`. All C modules are available via `wtk.<module_name>.c`.
+* Any submodules (i.e. part of the same module) are as follows: `wtk.<module_name>(.c).<submodule_name>`.
+
+```bash
+./build.sh clean # Resets all files.
+./build.sh `pkg-config lua5.4 --cflags --libs` -DWTK_SYSTEM_LUA -DWTK_UNPACKED # Builds with system lua, -O2 -s, local lua files.
+./build.sh -g -DWTK_UNPACKED # Builds with static lua, -g, local lua files.
+./build.sh # Builds with static lua, -O2 -s, lua files bundled into executable.
+./build.sh -static # Completely static build.
+./build.sh -g # Builds a debug build.
+```
+
+## Utilities
+
+In addition to various modules, I'm also posting a number of small utilities that I use to replace common, yet annoying anti-ergonomic utilities.
+
+The benefit to these is that they're all, small, speedy, statically compiled binaries, for linux. So you don't need an entire python environment just to run `jq`.
+
+`wtkjq`: `jq` with a sensible, lua-based interface. Slightly faster than regular `jq`.
 

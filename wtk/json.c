@@ -42,11 +42,16 @@
 #include <string.h>
 #include <math.h>
 #include <limits.h>
-#include <lua.h>
-#include <lauxlib.h>
+#ifndef lua_h
+    #include <lua.h>
+#endif
+#ifndef lauxlib_h
+    #include <lauxlib.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <strings.h>
 #define FPCONV_G_FMT_BUFSIZE   32
 
 /* Lua CJSON assumes the locale is the same for all threads within a
@@ -647,6 +652,8 @@ typedef struct {
 
     int decode_invalid_numbers;
     int decode_max_depth;
+
+    int empty_object_rid;
 } json_config_t;
 
 typedef struct {
@@ -1047,6 +1054,8 @@ static int lua_array_length(lua_State *l, json_config_t *cfg, strbuf_t *json)
 
         return -1;
     }
+    if (max == 0 && lua_rawequal(l, -1, lua_upvalueindex(2)))
+        return -1;
 
     return max;
 }
@@ -1177,12 +1186,9 @@ static void json_append_object(lua_State *l, json_config_t *cfg,
         lua_pop(l, 1);
         /* table, key */
     }
-    if (!comma) {
-        strbuf_append_char(json, '[');
-        strbuf_append_char(json, ']');
-    } else {
-        strbuf_append_char(json, '}');
-    }
+    if (!comma)
+        strbuf_append_char(json, '{');
+    strbuf_append_char(json, '}');
 }
 
 /* Serialise Lua data into JSON string. */
@@ -1208,7 +1214,7 @@ static void json_append_data(lua_State *l, json_config_t *cfg,
         current_depth++;
         json_check_encode_depth(l, cfg, current_depth, json);
         len = lua_array_length(l, cfg, json);
-        if (len > 0)
+        if (len >= 0)
             json_append_array(l, cfg, current_depth, json, len);
         else
             json_append_object(l, cfg, current_depth, json);
@@ -1219,9 +1225,6 @@ static void json_append_data(lua_State *l, json_config_t *cfg,
     case LUA_TLIGHTUSERDATA:
         if (lua_touserdata(l, -1) == NULL) {
             strbuf_append_mem(json, "null", 4);
-            break;
-        } else if (lua_touserdata(l, -1) == (void*)1) {
-            strbuf_append_mem(json, "[]", 2);
             break;
         }
     default:
@@ -1672,15 +1675,15 @@ static void json_parse_object_context(lua_State *l, json_parse_t *json)
      * .., table, key, value */
     json_decode_descend(l, json, 3);
 
-    lua_newtable(l);
-
     json_next_token(json, &token);
 
     /* Handle empty objects */
     if (token.type == T_OBJ_END) {
+        lua_pushvalue(l, lua_upvalueindex(2));
         json_decode_ascend(json);
         return;
     }
+    lua_newtable(l);
 
     while (1) {
         if (token.type != T_STRING)
@@ -1892,19 +1895,23 @@ static int lua_cjson_new(lua_State *l)
     /* Initialise number conversions */
     fpconv_init();
 
+
+    /* cjson empty object as upvalue */
+    lua_newtable(l);
     /* cjson module table */
     lua_newtable(l);
-
+    
     /* Register functions with config data as upvalue */
     json_create_config(l);
-    luaL_setfuncs(l, reg, 1);
+    lua_pushvalue(l, -3);
+    luaL_setfuncs(l, reg, 2);
+    
 
     /* Set cjson.null */
     lua_pushlightuserdata(l, NULL);
     lua_setfield(l, -2, "null");
-    lua_pushlightuserdata(l, (void*)1);
-    lua_setfield(l, -2, "empty_array");
-    lua_pushlightuserdata(l, (void*)2);
+    /* Set cjson.empty_object */
+    lua_pushvalue(l, -2);
     lua_setfield(l, -2, "empty_object");
 
     /* Set module name / version fields */
@@ -1937,7 +1944,7 @@ static int lua_cjson_safe_new(lua_State *l)
     return 1;
 }
 
-CJSON_EXPORT int luaopen_wtk_json(lua_State *l)
+CJSON_EXPORT int luaopen_wtk_json_c(lua_State *l)
 {
     lua_cjson_new(l);
 

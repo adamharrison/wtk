@@ -1,6 +1,12 @@
-#include <lua.h>
-#include <lauxlib.h>
-#include <lualib.h>
+#ifndef lua_h
+    #include <lua.h>
+#endif
+#ifndef lualib_h
+    #include <lualib.h>
+#endif
+#ifndef lauxlib_h
+    #include <lauxlib.h>
+#endif
 #include <mysql.h>
 #include <stdlib.h>
 #include <string.h>
@@ -400,7 +406,7 @@ static const luaL_Reg f_mysql_api[] = {
   { NULL,        NULL                       }
 };
 
-int luaopen_wtk_dbix_dbd_mysql(lua_State* L) {
+int luaopen_wtk_dbix_dbd_mysql_c(lua_State* L) {
   lua_newtable(L);
   luaL_setfuncs(L, f_mysql_api, 0);
   lua_pushvalue(L, -1);

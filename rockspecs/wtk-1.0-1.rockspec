@@ -1,9 +1,9 @@
-package = "wtk.z"
+package = "wtk"
 version = "1.0-1"
 description = {
-   summary = "A port of miniz.",
+   summary = "Base utility routines for wtk.",
    detailed = [[
-      Inflates/deflates data.
+      
    ]],
    license = "MIT"
 }
@@ -16,6 +16,6 @@ source = {
 build = {
    type = "builtin",
    modules = {
-      ["wtk.z.c"] = { sources = {"src/z.c"} }
+      ["wtk"] = { sources = {"wtk/wtk.c"} }
    }
 }

@@ -16,6 +16,6 @@ external_dependencies = {
 build = {
    type = "builtin",
    modules = {
-      ["wtk.dbix.dbd.postgres"] = { sources = {"src/dbd/postgres.c"}, libraries = {"pq"}, incdirs = {"$(LIBPOSTGRES_INCDIR)/postgresql"}, libdirs = {"$(LIBPOSTGRES_LIBDIR)"} }
+      ["wtk.dbix.dbd.postgres.c"] = { sources = {"src/dbd/postgres.c"}, libraries = {"pq"}, incdirs = {"$(LIBPOSTGRES_INCDIR)/postgresql"}, libdirs = {"$(LIBPOSTGRES_LIBDIR)"} }
    }
 }
