@@ -46,6 +46,7 @@ end
 function cschema:__index(key) return rawget(cschema, key) or connection[key] end
 
 function cschema:query(str, binds)
+  assert(not binds or type(binds) == 'table', "binds should be passed as a table")
   local statement, err = self._connection:query(str, binds)
   if not statement and err then error(err) end
   return statement, err
@@ -95,7 +96,7 @@ function stable:has_one(t, name, self_columns, foreign_columns) table.insert(sel
 
 function stable:validate_type(column, value)
   if column then
-    if value then
+    if value and value ~= dbix.null then
       if column.data_type:find("int") or column.data_type:find("decimal") or column.data_type:find("float") then
         assert(tonumber(value) ~= nil, column.name .. " must be a number.")
       elseif type(value) == 'string' and column.data_type:find("date") then
@@ -230,6 +231,7 @@ function resultset.new(connection, t, cached)
     rs._where = { table.unpack(connection._where) }
     rs._having = { table.unpack(connection._having) }
     rs._prefetch = { table.unpack(connection._prefetch) }
+    rs._join = { table.unpack(connection._join) }
     return rs
   end
   return setmetatable({
@@ -244,6 +246,7 @@ function resultset.new(connection, t, cached)
     _cached = cached,
     _default_values = {},
     _prefetch = {},
+    _join = {},
     _variable_row_count = false,
     _connection = connection,
     _table = t
@@ -272,6 +275,7 @@ function resultset:columns(columns) local rs = resultset.new(self) rs._columns =
 function resultset:group_by(columns) local rs = resultset.new(self) rs._group_by = type(columns) == 'table' and columns or { columns } return rs end
 function resultset:order_by(columns) local rs = resultset.new(self) rs._order_by = type(columns) == 'table' and #columns > 0 and columns or { columns } return rs end
 function resultset:distinct(distinct) local rs = resultset.new(self) rs._distinct = distinct return rs end
+function resultset:join(str) local rs = resultset.new(self) table.insert(rs._join, str) return rs end
 function resultset:prefetch(relationships) 
   local rs = resultset.new(self) 
   for i, relationship in ipairs(type(relationships) == 'table' and relationships or { relationships }) do
@@ -467,7 +471,7 @@ function result:insert()
   local binds = {}
   for i = 1, #self._table.columns do
     if self._row[i] then
-      if self._connection._options.validate_types then self._table:validate_type(self._table.columns[i], v) end
+      if self._connection._options.validate_types then self._table:validate_type(self._table.columns[i], self._row[i]) end
       table.insert(columns, self._connection:escape(self._table.columns[i].name))
       table.insert(fields, self._connection:translate_value(self._row[i]))
       if type(self._row[i]) == 'table' and getmetatable(self._row[i]) == blob then
@@ -603,7 +607,6 @@ function resultset:translate_conditions(condition)
   end
 end
 
-
 function resultset:as_sql(as_count)
   local statement = "SELECT "
   local disambiguate = self._prefetch and #self._prefetch > 0
@@ -632,6 +635,9 @@ function resultset:as_sql(as_count)
         return self._connection:escape("me", sc) .. " = " .. self._connection:escape(v.name, v.foreign_columns[i])
       end), " AND ")
     end
+  end
+  if self._join and #self._join > 0 then
+    statement = statement .. " " .. table.concat(self._join, " ")
   end
   if self._where and #self._where > 0 then
     local t = map(self._where, function(e) return "(" .. self:translate_conditions(e) .. ")" end)

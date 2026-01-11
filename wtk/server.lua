@@ -438,6 +438,7 @@ function Server:hot_reload(loop, file, options)
   loop:add(wtk.countdown.new(0, 0.25), function()
     if old_modified < system.mtime(file) then
       local status, err = pcall(function()
+        for k,v in pairs(package.loaded) do if not k:find("%.c$") and not k:find("%.c%.") then package.loaded[k] = nil end end
         assert(load(io.open(file, "rb"):read("*all"), "=" .. file))()
         self.log:info("Hot reloaded " ..  file .. ".")
         collectgarbage()

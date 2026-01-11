@@ -26,7 +26,7 @@
 typedef struct { int fd; } generic_fd_t;
 typedef struct { int fd; double recurring; } countdown_t;
 
-#define lua_newobject(L, name) lua_newuserdata(L, sizeof(name##_t)); luaL_setmetatable(L, "wtk." #name);
+#define lua_newobject(L, name) lua_newuserdata(L, sizeof(name##_t)); luaL_setmetatable(L, "wtk.c." #name);
 
 static int f_loop_new(lua_State* L) {
 	lua_newtable(L);
@@ -245,6 +245,37 @@ int luaopen_wtk_c(lua_State* L) {
   luaW_newclass(L, loop);
   const char* init_code = "local wtk = ...\n\
   wtk.Loop = wtk.loop\n\
+  wtk.error = {\n\
+		__tostring = function(self) return tostring(self.error) end,\n\
+		new = function(err, level)\n\
+			if type(err) == 'table' and getmetatable(err) == wtk.error then return err end\n\
+			return setmetatable({ error = err, stack = debug.traceback(nil, level or 2) }, wtk.error)\n\
+		end\n\
+	}\n\
+  wtk.try = function(func, catch, always, ...)\n\
+		local caught_error, catch_error, always_error, status\n\
+		local results = { xpcall(func, function(err)\n\
+			caught_error = err\n\
+			if type(caught_error) ~= 'table' or getmetatable(caught_error) ~= wtk.error then\n\
+				caught_error = wtk.error.new(err, 5)\n\
+			end\n\
+			if catch then\n\
+				xpcall(catch, function(err) \n\
+					catch_error = wtk.error.new(err, 5)\n\
+				end, caught_error)\n\
+			end\n\
+		end, ...) }\n\
+		if always then\n\
+			xpcall(always, function(err)\n\
+				always_error = wtk.error.new(err, 5)\n\
+			end, caught_error)\n\
+		end\n\
+		if always_error or catch_error then\n\
+			error(always_error or catch_error, 0)\n\
+		end\n\
+		return table.unpack(results)\n\
+  end\n\
+  try = wtk.try\n\
   package.loaded['wtk'] = wtk\n\
   package.loaded['wtk.c.loop'] = wtk.loop\n\
   package.loaded['wtk.c.system'] = wtk.system\n\
@@ -341,16 +372,17 @@ int luaopen_wtk_c(lua_State* L) {
 #else
 	#include <packed.lua.c>
 	int luaW_packlua(lua_State* L) {
-		lua_getfield(L, LUA_REGISTRYINDEX, LUA_PRELOAD_TABLE);
-		for (int i = 0; luaW_packed[i]; i += 3) {
-			if (luaL_loadbuffer(L, luaW_packed[i+1], (size_t)luaW_packed[i+2], luaW_packed[i])) {
-				lua_pushfstring(L, "error loading %s: %s", luaW_packed[i], lua_tostring(L, -1));
-				return -1;
+		#ifndef WTK_UNPACKED
+			lua_getfield(L, LUA_REGISTRYINDEX, LUA_PRELOAD_TABLE);
+			for (int i = 0; luaW_packed[i]; i += 3) {
+				if (luaL_loadbuffer(L, luaW_packed[i+1], (size_t)luaW_packed[i+2], luaW_packed[i])) {
+					lua_pushfstring(L, "error loading %s: %s", luaW_packed[i], lua_tostring(L, -1));
+					return -1;
+				}
+				lua_setfield(L, -2, luaW_packed[i]);
 			}
-			lua_setfield(L, -2, luaW_packed[i]);
-		}
-		lua_pop(L, 1);
-		#ifdef WTK_UNPACKED
+			lua_pop(L, 1);
+		#else
 			lua_getglobal(L, "package");
 			lua_pushliteral(L, "./?.lua;./?/init.lua;");
 			lua_getfield(L, -2, "path");
