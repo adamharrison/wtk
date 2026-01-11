@@ -1,14 +1,10 @@
-#ifndef WTK_SYSTEM_LUA
+#include <lua.h>
+#include <lualib.h>
+#include <lauxlib.h>
+#ifdef WTK_BUNDLED_LUA
 	#include "lua.c"
-#endif
-#ifndef lua_h
-	#include <lua.h>
-#endif
-#ifndef lualib_h
-	#include <lualib.h>
-#endif
-#ifndef lauxlib_h
-	#include <lauxlib.h>
+#else
+	#pragma message "Using system lua."
 #endif
 #include <math.h>
 #include <string.h>
@@ -383,6 +379,7 @@ int luaopen_wtk_c(lua_State* L) {
 			}
 			lua_pop(L, 1);
 		#else
+			#pragma message "Using unpacked lua modules."
 			lua_getglobal(L, "package");
 			lua_pushliteral(L, "./?.lua;./?/init.lua;");
 			lua_getfield(L, -2, "path");

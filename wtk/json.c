@@ -42,12 +42,8 @@
 #include <string.h>
 #include <math.h>
 #include <limits.h>
-#ifndef lua_h
-    #include <lua.h>
-#endif
-#ifndef lauxlib_h
-    #include <lauxlib.h>
-#endif
+#include <lua.h>
+#include <lauxlib.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>

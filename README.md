@@ -160,14 +160,14 @@ server, you may wish to compile locally.
 
 * All modules can be either dynamically linked with `require`, statically linked with in the build, or `#include`d into a program.
 * By default, your build should always `-I.`, and either `-I<path_to_wtk>`, or symlink the relevant modules into your `src` directory, in that order.
-* Most applications should be a single `main.c` file, and a single `packed.c` file, generated from the packer of all your lua files; with at least `init.lua` existing.
+* Most applications should be a single `main.c` file, and a single `packed.lua.c` file, generated from the packer of all your lua files; with at least `init.lua` existing.
 * Most build scripts should be able to function like the following, only purely bash.
 * All lua modules are accessible via `wtk.<module_name>`. All C modules are available via `wtk.<module_name>.c`.
 * Any submodules (i.e. part of the same module) are as follows: `wtk.<module_name>(.c).<submodule_name>`.
 
 ```bash
 ./build.sh clean # Resets all files.
-./build.sh `pkg-config lua5.4 --cflags --libs` -DWTK_SYSTEM_LUA -DWTK_UNPACKED # Builds with system lua, -O2 -s, local lua files.
+./build.sh `pkg-config lua5.4 --cflags --libs` -DWTK_UNPACKED # Builds with system lua, -O2 -s, local lua files.
 ./build.sh -g -DWTK_UNPACKED # Builds with static lua, -g, local lua files.
 ./build.sh # Builds with static lua, -O2 -s, lua files bundled into executable.
 ./build.sh -static # Completely static build.

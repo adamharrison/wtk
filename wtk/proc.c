@@ -3,15 +3,9 @@
 #include <signal.h>
 #include <math.h>
 #include <fcntl.h>
-#ifndef lua_h
-    #include <lua.h>
-#endif
-#ifndef lualib_h
-    #include <lualib.h>
-#endif
-#ifndef lauxlib_h
-    #include <lauxlib.h>
-#endif
+#include <lua.h>
+#include <lualib.h>
+#include <lauxlib.h>
 #include <errno.h>
 #include <string.h>
 #include <stdlib.h>

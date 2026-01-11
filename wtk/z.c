@@ -1,10 +1,6 @@
 
-#ifndef lua_h
-    #include <lua.h>
-#endif
-#ifndef lauxlib_h
-    #include <lauxlib.h>
-#endif
+#include <lua.h>
+#include <lauxlib.h>
 
 #ifndef MINIZ_EXPORT
 #define MINIZ_EXPORT

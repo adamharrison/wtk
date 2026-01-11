@@ -9,6 +9,8 @@ use File::Basename qw(dirname basename);
 
 my $file = $ARGV[0];
 
+my %verboten = map { $_ => 1 } qw(lua.h lualib.h lauxlib.h);
+
 sub process_file {
   my ($file, $hash, $depth) = @_;
   open(my $fh, "<", $file) or die "can't open file $file: $!";
@@ -26,7 +28,7 @@ sub process_file {
       print $line . "\n" if $line !~ m/^\s*$/;
     }
     if (!$open) {
-      if ($line =~ m/^#include\s+"(\S+)"/) {
+      if ($line =~ m/^#include\s+"(\S+)"/ && !$verboten{$1}) {
         if (!$hash->{$1} && (-f $dir . "/" . $1)) {
           $hash->{$1} = 1;
           process_file($dir . "/" . $1, $hash, $depth + 1);
@@ -38,5 +40,9 @@ sub process_file {
   }
 }
 
-print "#define MAKE_LIB\n";
+print "#define MAKE_LIB\n" if $file =~ m/onelua\.c/i;;
+print "#define LUA_CORE
+#define LUA_LIB
+#define ltable_c
+#define lvm_c\n" if $file =~ m/lua\.h/i;
 process_file($file, { }, 0);
