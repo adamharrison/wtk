@@ -440,3 +440,4 @@ int luaW_signal(lua_State* L) {
   return 0;
 }
 
+#define luaW_requiref(L, module, func) int func(lua_State* L); luaL_requiref(L, module, func, 0), lua_pop(L, 1);

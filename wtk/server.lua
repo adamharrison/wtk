@@ -342,17 +342,16 @@ function Server.new(t)
   return self
 end
 
-function Server:error_handler(request, err, client)
+function Server:error_handler(request, err, client, meta)
   if type(err) == 'table' and err.code and type(err.code) == "number" then
     local msg = string.format("%d Error", err.code)
     if err.message then msg = msg .. ": " .. err.message end
-    if self.verbose or not err.verbose then self.log:error(self.verbose and debug.traceback(msg, 3) or msg) end
     if request and not request.responded then request:respond(err.code, { ["Content-Type"] = "text/plain; charset=UTF-8" }, (err.message or (err.code .. " " .. self.codes[err.code])) .. "\n") end
   else
     local msg = string.format("Unhandled Error: %s", err) 
-    if self.verbose then self.log:error(debug.traceback(msg, 3)) else self.log:error(msg) end
     if request and not request.responded then request:respond(500, { ["Content-Type"] = "text/plain; charset=UTF-8" }, "500 Internal Server Error") end
   end
+  if self.verbose or not err.verbose then self.log:error(self.verbose and (msg .. "\n" .. meta.stack) or msg) end
   if not request then client:close() end
   if request and request.client.websocket then request.client.websocket:close() end
 end
@@ -365,14 +364,14 @@ function Server:accept()
     client.co = coroutine.create(function() 
       while not client.closed do
         local request
-        xpcall(function()
+        try(function()
           request = Request.new(client):parse_headers()
           if request then
             self:accepted(client, request)
             if not request.responded then error({ code = 404 }) end
           end
         end, function(err)
-          self:error_handler(request, err, client)
+          self:error_handler(request, err.error, client, err)
         end)
         -- clear out buffer if it wasn't read
         if request then request:body() end

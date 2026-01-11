@@ -96,26 +96,32 @@ this repository into your project, and then simply symlinking the relevant sourc
 directory, and using the following build script and `main.c`:
 
 ```bash
-#!/bin/sh
-[ "$CC" = "" ] && CC=musl-gcc
-[ "$CFLAGS" = "" ] && CFLAGS="-O3 -s"
-[ "$BIN" = "" ] && BIN=server
-[ "$@" == "clean" ] && rm -rf packed.c packer $BIN && exit 0
-([ -f packer ] || gcc wtk.c -DWTK_BUNDLED_LUA -DWTK_MAKE_PACKER -o packer -lm) && ./packer *.lua > packed.c
-[ ! -e "packed.c" ] && ./packer *.lua > packed.c
-$CC -DWTK_PACKED -DWTK_BUNDLED_LUA $@ main.c -lm  -static -o wtkjq
+#!/bin/bash
+CFLAGS="$CFLAGS -I. -I../../wtk"
+[[ "$CC" == "" ]] && CC=gcc
+[[ "$@" == "clean" ]] && { rm -f packer packed.lua.c wtkjq; exit 0; }
+[[ "$@" != *"-g" && "$@" != "-O" ]] && CFLAGS="$CFLAGS -O2 -s"
+[[ "$@" != *"-DWTK_UNPACKED"* ]] && { [ -f packer ] || gcc main.c $@ $CFLAGS -DWTK_MAKE_PACKER -o packer -lm; } && ./packer *.lua > packed.lua.c
+$CC  -DWTKJQ_VERSION='"1.0"' main.c $@ $CFLAGS -lm -o wtkjq
 ```
 
 ```c
-#include "wtk.c"
-#include "server.c"
+#include <wtk.c>
+#include <json.c>
 #include <stdio.h>
+
+#ifndef WTKJQ_VERSION
+  #define WTKJQ_VERSION "unknown"
+#endif
 
 int main(int argc, char* argv[]) {
   lua_State* L = luaL_newstate();
   luaL_openlibs(L);
-  if (luaW_signal(L) || luaW_packlua(L) || luaW_loadlib(L, "wtk", luaopen_wtk) || luaW_loadlib(L, "wtk.server.driver", luaopen_wtk_server_driver) || luaW_loadentry(L, "init") || luaW_run(L, argc, argv)) {
-    fprintf(stderr, "error initializing server: %s\n", lua_tostring(L, -1));
+  lua_pushliteral(L, WTKJQ_VERSION), lua_setglobal(L, "VERSION");
+  luaW_requiref(L, "wtk.c", luaopen_wtk_c);
+  luaW_requiref(L, "wtk.json.c", luaopen_wtk_json_c);
+  if (luaW_signal(L) || luaW_packlua(L) || luaW_loadentry(L, "init") || luaW_run(L, argc, argv)) {
+    fprintf(stderr, "%s\n", lua_tostring(L, -1));
     return -1;
   }
   lua_close(L);
@@ -164,6 +170,7 @@ server, you may wish to compile locally.
 * Most build scripts should be able to function like the following, only purely bash.
 * All lua modules are accessible via `wtk.<module_name>`. All C modules are available via `wtk.<module_name>.c`.
 * Any submodules (i.e. part of the same module) are as follows: `wtk.<module_name>(.c).<submodule_name>`.
+* Methods of building can vary; small programs should simple `#include <json.c>`; other programs may prefer to build individual objects. Using `luaW_requiref` should work both ways.
 
 ```bash
 ./build.sh clean # Resets all files.
@@ -173,6 +180,7 @@ server, you may wish to compile locally.
 ./build.sh -static # Completely static build.
 ./build.sh -g # Builds a debug build.
 ```
+
 
 ## Utilities
 
