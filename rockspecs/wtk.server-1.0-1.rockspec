@@ -16,7 +16,7 @@ source = {
 build = {
    type = "builtin",
    modules = {
-      ["wtk.server"] = "src/server.lua",
-      ["wtk.server.c"] = { sources = {"src/server.c"} }
+      ["wtk.server"] = "wtk/server.lua",
+      ["wtk.server.c"] = { sources = {"wtk/server.c"}, incdirs = {"wtk"} }
    }
 }

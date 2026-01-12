@@ -19,6 +19,6 @@ external_dependencies = {
 build = {
    type = "builtin",
    modules = {
-      ["wtk.client.c"] = { sources = {"src/client.c"}, libraries = {"mbedtls"}, incdirs = {"$(LIBMBEDTLS_INCDIR)"}, libdirs = {"$(LIBMBEDTLS_LIBDIR)"} }
+      ["wtk.client.c"] = { sources = {"wtk/client.c"}, libraries = {"mbedtls"}, incdirs = {"$(LIBMBEDTLS_INCDIR)","wtk"}, libdirs = {"$(LIBMBEDTLS_LIBDIR)"} }
    }
 }
