@@ -397,7 +397,7 @@ int luaopen_wtk_server_c(lua_State* L) {
 	lua_newtable(L);
   luaL_newclass(L, socket, server_socket_lib);
   luaL_newclass(L, sha1, sha1_lib);
-  luaL_newclass(L, base64, sha1_lib);
+  luaL_newclass(L, base64, base64_lib);
   return 1;
 }
 

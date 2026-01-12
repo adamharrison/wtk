@@ -104,7 +104,7 @@ function Response:write(client)
     end
   end
   self:write_encoded(client, '') -- for chunked
-  if not self.headers['content-length'] and self.headers['transfer-encoding'] ~= 'chunked' then client:close() end
+  if self.code ~= 101 and not self.headers['content-length'] and self.headers['transfer-encoding'] ~= 'chunked' then client:close() end
   if client.server.verbose then
     if self.code >= 300 and self.code < 400 then
       client.server.log:verbose("RES %s %s %s", self.code, client.peer, self.headers.location)

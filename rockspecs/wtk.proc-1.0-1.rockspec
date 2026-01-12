@@ -16,6 +16,6 @@ source = {
 build = {
    type = "builtin",
    modules = {
-      ["wtk.proc.c"] = { sources = {"src/proc.c"} }
+      ["wtk.proc.c"] = { sources = {"wtk/proc.c"}, incdirs = {"wtk"} }
    }
 }

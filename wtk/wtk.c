@@ -223,6 +223,7 @@ static int f_countdown_gc(lua_State* L) {
   countdown_t* countdown = luaL_checkudata(L, 1, "wtk.c.countdown");
   if (countdown->fd)
 		close(countdown->fd);
+	return 0;
 }
 
 static const luaL_Reg countdown_lib[] = {
@@ -419,6 +420,7 @@ static int luaW_signalgc(lua_State* L){
 		if (luaWLs[i] == L)
 			luaWLs[i] = NULL;
   }
+  return 0;
 }
 
 int luaW_signal(lua_State* L) {

@@ -92,12 +92,12 @@ loop:run()
 ```
 
 And of course, if you want, you can pack the whole thing into a single binary by simply using `git add submodule` to add
-this repository into your project, and then simply symlinking the relevant source files you'd like to include into the main
+this repository into your project, and then simply symlinking the `wtk` directory to your main directory
 directory, and using the following build script and `main.c`:
 
 ```bash
 #!/bin/bash
-CFLAGS="$CFLAGS -I. -I../../wtk"
+CFLAGS="$CFLAGS -I. -Iwtk"
 [[ "$CC" == "" ]] && CC=gcc
 [[ "$@" == "clean" ]] && { rm -f packer packed.lua.c wtkjq; exit 0; }
 [[ "$@" != *"-g" && "$@" != "-O" ]] && CFLAGS="$CFLAGS -O2 -s"
