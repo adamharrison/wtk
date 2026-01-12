@@ -11751,7 +11751,7 @@ int luaopen_wtk_client_c(lua_State* L) {
           else\n\
             if #self.retained > 0 then\n\
               local chunk = self.retained:sub(1, bytes)\n\
-              self.retained = self.retained:sub(bytes)\n\
+              self.retained = self.retained:sub(bytes + 1)\n\
               return chunk\n\
             end\n\
             return self:recv(bytes, blocking)\n\
@@ -11771,7 +11771,7 @@ int luaopen_wtk_client_c(lua_State* L) {
       if self.headers['transfer-encoding'] == 'chunked' then\n\
         if not self.current_chunk_size then\n\
           local l = self.socket:read('*l', blocking)\n\
-          self.current_chunk_size = tonumber(l, 16)\n\
+          self.current_chunk_size = tonumber(l, 16) or 0\n\
         end\n\
         if self.current_chunk_size == 0 then \n\
           self.socket:read(2, blocking, 'exact')\n\
@@ -11905,7 +11905,7 @@ int luaopen_wtk_client_c(lua_State* L) {
       }\n\
     end\n\
   ";
-  if (luaL_loadstring(L, lua_agent_code))
+  if (luaL_loadbuffer(L, lua_agent_code, strlen(lua_agent_code), "=wtk.client.c"))
     return lua_error(L);
   lua_pushvalue(L, -2);
   lua_call(L, 1, 0);
