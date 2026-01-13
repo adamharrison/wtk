@@ -11467,11 +11467,6 @@ static int f_client_socket_openk(lua_State* L, int status, lua_KContext ctx) {
           mbedtls_snprintf(1, err, sizeof(err), status, "can't set hostname %s", hostname);
           break;
         }
-      } else {
-        if (connect(c->fd, (struct sockaddr *) &c->addr, sizeof(struct sockaddr)) == -1) {
-          snprintf(err, sizeof(err), "can't connect to host %s [%s] on port %d", hostname, ip, port);
-          break;
-        }
       }
       c->state = STATE_HANDSHAKE;
     } 

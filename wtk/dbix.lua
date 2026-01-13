@@ -98,9 +98,9 @@ function stable:validate_type(column, value)
   if column then
     if value and value ~= dbix.null then
       if column.data_type:find("int") or column.data_type:find("decimal") or column.data_type:find("float") then
-        assert(tonumber(value) ~= nil, column.name .. " must be a number.")
+        assert(tonumber(value) ~= nil, column.name .. " must be a number, not " .. tostring(value) .. ".")
       elseif type(value) == 'string' and column.data_type:find("date") then
-        assert(value:find("^%d+%-%d+%-%d+"), column.name .. " must be a date.")
+        assert(value:find("^%d+%-%d+%-%d+"), column.name .. " must be a date, not " .. tostring(value) .. ".")
       end
     else
       assert(not column.not_null, column.name .. " must be non-null.")
@@ -139,11 +139,10 @@ function connection:txn_rollback() return self._c.txn_rollback and self._c:txn_r
 -- end of functionality to be provided by c modules
 function connection:txn(func)
   self:txn_start()
-  local status, err = xpcall(func, function(a) return debug.traceback(a, 3) end)
-  if not status then 
+  try(func, function(err)
     self:txn_rollback()
-    error(err, 0)
-  end
+    error(err)
+  end)
   self:txn_commit()
   return err
 end
