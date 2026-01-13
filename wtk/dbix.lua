@@ -349,12 +349,12 @@ function resultset:merge_results(rows)
     if relationship.type == "belongs_to" or relationship.type == "might_belong" or relationship.type == "has_one" then  
       local offset = self:offset_of_prefetch(relationship)
       local values = {}
-      local all_null = true
+      local all_nil = true
       for j = offset, offset + #relationship.foreign_table.columns do
         values[j - offset + 1] = rows[1]._row[j]
-        if rows[1]._row[j] ~= nil then all_null = false end
+        if rows[1]._row[j] ~= nil then all_nil = false end
       end
-      if relationship.type == "might_belong" and all_null then
+      if relationship.type == "might_belong" and all_nil then
         rows[1]._null_keys[relationship.name] = true
       else
         rawset(rows[1], relationship.name, result.new(self._connection, relationship.foreign_table, values))
