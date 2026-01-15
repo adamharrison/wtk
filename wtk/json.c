@@ -37,6 +37,7 @@
  */
 
 // This file modified for use in wtk by adding a few minor things, and making it easily accessible to the projects conforming to SPCS.
+// Also, updated to work with lua5.4 integers.
 
 #include <assert.h>
 #include <string.h>
@@ -49,6 +50,24 @@
 #include <stdarg.h>
 #include <strings.h>
 #define FPCONV_G_FMT_BUFSIZE   32
+
+typedef enum {
+    T_OBJ_BEGIN,
+    T_OBJ_END,
+    T_ARR_BEGIN,
+    T_ARR_END,
+    T_STRING,
+    T_NUMBER,
+    T_INTEGER,
+    T_BOOLEAN,
+    T_NULL,
+    T_COLON,
+    T_COMMA,
+    T_END,
+    T_WHITESPACE,
+    T_ERROR,
+    T_UNKNOWN
+} json_token_type_t;
 
 /* Lua CJSON assumes the locale is the same for all threads within a
  * process and doesn't change after initialisation.
@@ -106,34 +125,47 @@ static inline int valid_number_character(char ch)
 
 /* Calculate the size of the buffer required for a strtod locale
  * conversion. */
-static int strtod_buffer_size(const char *s)
+static int strtod_buffer_size(const char *s, int* has_decimal_point)
 {
     const char *p = s;
 
-    while (valid_number_character(*p))
+    while (valid_number_character(*p)) {
+        if (*p == '.')
+            *has_decimal_point = 1;
         p++;
+    }
 
     return p - s;
 }
 
 /* Similar to strtod(), but must be passed the current locale's decimal point
  * character. Guaranteed to be called at the start of any valid number in a string */
-double fpconv_strtod(const char *nptr, char **endptr)
+json_token_type_t fpconv_strtod(const char *nptr, char **endptr, double* d, long long* l)
 {
     char localbuf[FPCONV_G_FMT_BUFSIZE];
     char *buf, *endbuf, *dp;
     int buflen;
-    double value;
+    int has_decimal_point;
+    json_token_type_t type = T_UNKNOWN;
 
     /* System strtod() is fine when decimal point is '.' */
-    if (locale_decimal_point == '.')
-        return strtod(nptr, endptr);
 
-    buflen = strtod_buffer_size(nptr);
+    has_decimal_point = 0;
+    buflen = strtod_buffer_size(nptr, &has_decimal_point);
     if (!buflen) {
         /* No valid characters found, standard strtod() return */
         *endptr = (char *)nptr;
-        return 0;
+        return T_UNKNOWN;
+    }
+
+    if (locale_decimal_point == '.') {
+        if (has_decimal_point) {
+            *d = strtod(nptr, endptr);
+            return T_NUMBER;
+        } else {
+            *l = strtoll(nptr, endptr, 10);
+            return T_INTEGER;
+        }
     }
 
     /* Duplicate number into buffer */
@@ -153,15 +185,23 @@ double fpconv_strtod(const char *nptr, char **endptr)
 
     /* Update decimal point character if found */
     dp = strchr(buf, '.');
-    if (dp)
+    if (dp) {
+        has_decimal_point = 1;
         *dp = locale_decimal_point;
+    }
 
-    value = strtod(buf, &endbuf);
-    *endptr = (char *)&nptr[endbuf - buf];
+    if (has_decimal_point) {
+        *d = strtod(buf, &endbuf);
+        *endptr = (char *)&nptr[endbuf - buf];
+        type = T_NUMBER;
+    } else {
+        *l = strtoll(nptr, endptr, 10);
+        type = T_INTEGER;
+    }
     if (buflen >= FPCONV_G_FMT_BUFSIZE)
         free(buf);
 
-    return value;
+    return type;
 }
 
 /* "fmt" must point to a buffer of at least 6 characters */
@@ -595,23 +635,6 @@ void strbuf_append_fmt_retry(strbuf_t *s, const char *fmt, ...)
 #define DEFAULT_DECODE_INVALID_NUMBERS 0
 #endif
 
-typedef enum {
-    T_OBJ_BEGIN,
-    T_OBJ_END,
-    T_ARR_BEGIN,
-    T_ARR_END,
-    T_STRING,
-    T_NUMBER,
-    T_BOOLEAN,
-    T_NULL,
-    T_COLON,
-    T_COMMA,
-    T_END,
-    T_WHITESPACE,
-    T_ERROR,
-    T_UNKNOWN
-} json_token_type_t;
-
 static const char *json_token_type_name[] = {
     "T_OBJ_BEGIN",
     "T_OBJ_END",
@@ -619,6 +642,7 @@ static const char *json_token_type_name[] = {
     "T_ARR_END",
     "T_STRING",
     "T_NUMBER",
+    "T_INTEGER",
     "T_BOOLEAN",
     "T_NULL",
     "T_COLON",
@@ -667,6 +691,7 @@ typedef struct {
         const char *string;
         double number;
         int boolean;
+        long long integer;
     } value;
     int string_len;
 } json_token_t;
@@ -1528,12 +1553,12 @@ static void json_next_number_token(json_parse_t *json, json_token_t *token)
 {
     char *endptr;
 
-    token->type = T_NUMBER;
-    token->value.number = fpconv_strtod(json->ptr, &endptr);
-    if (json->ptr == endptr)
+    token->type = fpconv_strtod(json->ptr, &endptr, &token->value.number, &token->value.integer);
+    if (json->ptr == endptr || token->type == T_UNKNOWN)
         json_set_token_error(token, json, "invalid number");
-    else
+    else {
         json->ptr = endptr;     /* Skip the processed number */
+    }
 
     return;
 }
@@ -1761,6 +1786,9 @@ static void json_process_value(lua_State *l, json_parse_t *json,
         break;;
     case T_NUMBER:
         lua_pushnumber(l, token->value.number);
+        break;;
+    case T_INTEGER:
+        lua_pushinteger(l, token->value.integer);
         break;;
     case T_BOOLEAN:
         lua_pushboolean(l, token->value.boolean);

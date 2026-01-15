@@ -254,17 +254,17 @@ int luaopen_wtk_c(lua_State* L) {
 		local results = { xpcall(func, function(err)\n\
 			caught_error = err\n\
 			if type(caught_error) ~= 'table' or getmetatable(caught_error) ~= wtk.error then\n\
-				caught_error = wtk.error.new(err, 5)\n\
+				caught_error = wtk.error.new(err, 3)\n\
 			end\n\
 			if catch then\n\
 				xpcall(catch, function(err) \n\
-					catch_error = wtk.error.new(err, 5)\n\
+					catch_error = wtk.error.new(err, 3)\n\
 				end, caught_error)\n\
 			end\n\
 		end, ...) }\n\
 		if always then\n\
 			xpcall(always, function(err)\n\
-				always_error = wtk.error.new(err, 5)\n\
+				always_error = wtk.error.new(err, 3)\n\
 			end, caught_error)\n\
 		end\n\
 		if always_error or catch_error then\n\
@@ -328,7 +328,7 @@ int luaopen_wtk_c(lua_State* L) {
 		end\n\
 		return args\n\
 	end";
-	if (luaL_loadstring(L, init_code))
+	if (luaL_loadbuffer(L, init_code, strlen(init_code), "=wtk.c"))
     return lua_error(L);
   lua_pushvalue(L, -2);
   lua_call(L, 1, 0);

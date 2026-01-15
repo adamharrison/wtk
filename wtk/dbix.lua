@@ -98,9 +98,9 @@ function stable:validate_type(column, value)
   if column then
     if value and value ~= dbix.null then
       if column.data_type:find("int") or column.data_type:find("decimal") or column.data_type:find("float") then
-        assert(tonumber(value) ~= nil, column.name .. " must be a number.")
+        assert(tonumber(value) ~= nil, column.name .. " must be a number, not " .. tostring(value) .. ".")
       elseif type(value) == 'string' and column.data_type:find("date") then
-        assert(value:find("^%d+%-%d+%-%d+"), column.name .. " must be a date.")
+        assert(value:find("^%d+%-%d+%-%d+"), column.name .. " must be a date, not " .. tostring(value) .. ".")
       end
     else
       assert(not column.not_null, column.name .. " must be non-null.")
@@ -139,11 +139,10 @@ function connection:txn_rollback() return self._c.txn_rollback and self._c:txn_r
 -- end of functionality to be provided by c modules
 function connection:txn(func)
   self:txn_start()
-  local status, err = xpcall(func, function(a) return debug.traceback(a, 3) end)
-  if not status then 
+  try(func, function(err)
     self:txn_rollback()
-    error(err, 0)
-  end
+    error(err)
+  end)
   self:txn_commit()
   return err
 end
@@ -350,10 +349,16 @@ function resultset:merge_results(rows)
     if relationship.type == "belongs_to" or relationship.type == "might_belong" or relationship.type == "has_one" then  
       local offset = self:offset_of_prefetch(relationship)
       local values = {}
+      local all_nil = true
       for j = offset, offset + #relationship.foreign_table.columns do
         values[j - offset + 1] = rows[1]._row[j]
+        if rows[1]._row[j] ~= nil then all_nil = false end
       end
-      rawset(rows[1], relationship.name, result.new(self._connection, relationship.foreign_table, values))
+      if relationship.type == "might_belong" and all_nil then
+        rows[1]._null_keys[relationship.name] = true
+      else
+        rawset(rows[1], relationship.name, result.new(self._connection, relationship.foreign_table, values))
+      end
     elseif relationship.type == "has_many" then
       local offset = self:offset_of_prefetch(relationship)
       local records = map(rows, function(row)
@@ -428,11 +433,12 @@ function resultset:count()
   return count
 end
 
-function result.new(connection, table, row, rs) return setmetatable({ _connection = connection, _table = table, _row = row, _dirty = {}, _rs = rs }, result) end
+function result.new(connection, table, row, rs) return setmetatable({ _connection = connection, _table = table, _row = row, _null_keys = {}, _dirty = {}, _rs = rs }, result) end
 
 function result:__index(key)
   if rawget(result, key) then return rawget(result, key) end
   if rawget(self._table, key) then return rawget(self._table, key) end
+  if rawget(self._null_keys, key) then return nil end
   for i, column in ipairs(self._table.columns) do
     if column.name == key then 
       return self._row[i]
