@@ -100,6 +100,16 @@ local wtkjq_functions = {
       return accumulator
     end
   },
+  length = {
+    args = { "..." },
+    func = function(...)
+      local lengths = {}
+      for _, a in ipairs({ ... }) do
+        table.insert(lengths, #a)
+      end
+      return table.unpack(lengths)
+    end
+  },
   delete = {
     args = { "fucntion", "..." },
     func = function(key, ...)
@@ -432,7 +442,7 @@ local args = wtk.pargs({ ... }, {
   ["raw-output0"] = "flag",
   ["join-output"] = "flag"
 }, {
-  C = "compres",
+  c = "compress",
   S = "sort-keys", 
   s = "slurp",
   h = "help",
