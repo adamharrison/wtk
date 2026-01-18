@@ -103,7 +103,7 @@ function stable:validate_type(column, value)
         assert(value:find("^%d+%-%d+%-%d+"), column.name .. " must be a date, not " .. tostring(value) .. ".")
       end
     else
-      assert(not column.not_null, column.name .. " must be non-null.")
+      assert(not column.not_null or column.auto_increment or column.default, column.name .. " must be non-null.")
     end
   end
 end

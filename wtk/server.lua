@@ -225,7 +225,7 @@ function Request:parts()
           headers = headers,
           read = function(file, length) 
             if file.finished then return nil end
-            file.buffer = file.buffer .. self:read(4096)
+            file.buffer = file.buffer .. self:read(length or 4096)
             local bs, be = file.buffer:find(boundary)
             if not bs then
               local internal = file.buffer:sub(1, #file.buffer - #boundary)
