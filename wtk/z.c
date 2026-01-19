@@ -154,7 +154,7 @@
    callbacks to the zlib and archive API's, and a few stand-alone helper API's which don't provide custom user
    functions (such as tdefl_compress_mem_to_heap() and tinfl_decompress_mem_to_heap()) won't work. */
 /*#define MINIZ_NO_MALLOC */
-#define MINIZ_NO_ARCHIVE_APIS
+//#define MINIZ_NO_ARCHIVE_APIS
 #define MINIZ_NO_ARCHIVE_WRITING_APIS
 #define MINIZ_NO_ZLIB_COMPATIBLE_NAMES
 
@@ -9477,7 +9477,7 @@ static int f_z_send(lua_State* L) {
     return 1;
 }
 
-int f_z_open(lua_State* L) {
+static int f_z_open(lua_State* L) {
     const char* type = luaL_checkstring(L, 2);
     int level = 1;
     int buffer_capacity = 8192;
@@ -9508,7 +9508,7 @@ int f_z_open(lua_State* L) {
     return 1;
 }
 
-int f_z_flush(lua_State* L) {
+static int f_z_flush(lua_State* L) {
     z_t* z = (z_t*)lua_touserdata(L, 1);
     if (z->type == Z_CLOSED)
         return 0;
@@ -9536,7 +9536,7 @@ int f_z_flush(lua_State* L) {
     return 1;
 }
 
-int f_z_close(lua_State* L) {
+static int f_z_close(lua_State* L) {
     z_t* z = (z_t*)lua_touserdata(L, 1);
     f_z_flush(L);
     if (z->type == Z_DEFLATE)

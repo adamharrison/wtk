@@ -139,12 +139,12 @@ function connection:txn_rollback() return self._c.txn_rollback and self._c:txn_r
 -- end of functionality to be provided by c modules
 function connection:txn(func)
   self:txn_start()
-  try(func, function(err)
+  local _, result = try(func, function(err)
     self:txn_rollback()
     error(err)
   end)
   self:txn_commit()
-  return err
+  return result
 end
 
 function connection:translate_value(value)
