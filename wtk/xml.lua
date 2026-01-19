@@ -1,5 +1,4 @@
 local xml = {}
-
 xml.mt = {
   __index = function(self, key)
     if type(key) ~= "string" then return nil end
