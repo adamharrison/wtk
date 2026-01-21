@@ -383,9 +383,11 @@ int luaopen_wtk_c(lua_State* L) {
 		#else
 			#pragma message "Using unpacked lua modules."
 			lua_getglobal(L, "package");
-			lua_pushfstring(L, "%s/?.lua;%s/?/init.lua;", directory, directory);
-			lua_getfield(L, -2, "path");
-			lua_concat(L, 2);
+			lua_pushstring(L, "./?.lua;./?/init.lua;");
+			if (directory && strcmp("directory", ".") != 0)
+				lua_pushfstring(L, "%s/?.lua;%s/?/init.lua;", directory, directory);
+			lua_getfield(L, directory && strcmp("directory", ".") != 0 ? -3 : -2, "path");
+			lua_concat(L, directory && strcmp("directory", ".") != 0 ? 3 : 2);
 			lua_setfield(L, -2, "path");
 			lua_pop(L, 1);
 		#endif
@@ -397,7 +399,7 @@ int luaW_loadstring(lua_State* L, const char* str, const char* name) {
 	return luaL_loadbuffer(L, str, strlen(str), name);
 }
 
-#define luaW_loadentry(L, init) luaW_loadstring(L, "require \"" init "\"(...)", "=luaW_loadentry")
+#define luaW_loadentry(L, init) luaW_loadstring(L, "(package.preload." init " or assert(loadfile(assert(package.searchpath(\"" init "\", package.path)))))(...)", "=luaW_loadentry")
 
 int luaW_run(lua_State* L, int argc, char* argv[]) {
   for (int i = 1; i < argc; ++i) 
