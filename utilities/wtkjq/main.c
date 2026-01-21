@@ -12,7 +12,7 @@ int main(int argc, char* argv[]) {
   lua_pushliteral(L, WTKJQ_VERSION), lua_setglobal(L, "VERSION");
   luaL_requiref(L, "wtk.c", luaopen_wtk_c, 0);
   luaL_requiref(L, "wtk.json.c", luaopen_wtk_json_c, 0);
-  if (luaW_signal(L) || luaW_packlua(L) || luaW_loadentry(L, "init") || luaW_run(L, argc, argv)) {
+  if (luaW_signal(L) || luaW_packlua(L, ".") || luaW_loadentry(L, "init") || luaW_run(L, argc, argv)) {
     fprintf(stderr, "%s\n", lua_tostring(L, -1));
     return -1;
   }
