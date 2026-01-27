@@ -1,5 +1,6 @@
 local xml = {}
-xml.mt = {
+xml.cmt = {}
+xml.tmt = {
   __index = function(self, key)
     if type(key) ~= "string" then return nil end
     if rawget(rawget(self, "props"), key) then return rawget(rawget(self, "props"), key) end
@@ -17,9 +18,12 @@ xml.mt = {
     return nil
   end,
 }
+local function sorted_keys(a) local t = {} for k,v in pairs(a) do table.insert(t, k) end table.sort(t) return t end
+local function merge(a,b) local t = {} for k,v in pairs(a) do t[k] = v end for k,v in pairs(b) do t[k] = v end return t end
 
 local function find_end_of_string(str, offset) 
   local quote = str:sub(offset, offset)
+  assert(quote == "'" or quote == '"')
   local escape_count = 0
   local actual_string = ""
   for i = offset + 1, #str do
@@ -40,31 +44,78 @@ local function find_end_of_string(str, offset)
   return nil
 end
 
-function xml.new(tag, props, ...)
-  return setmetatable({ tag = tag, props = props, ... }, xml.mt)
-end
+function xml.tag(tag, props, ...) return setmetatable({ tag = tag, props = props, ... }, xml.tmt) end
+function xml.comment(comment) return setmetatable({ comment = comment }, xml.cmt) end
+function xml.prolog(version, encoding) return setmetatable({ version = version, encoding = encoding }, xml.pmt) end
+function xml.doctype(definition) return setmetatable({ definition = definition }, xml.dtmt) end
+function xml.document(prolog, doctype) return setmetatable({ prolog = prolog, doctype = doctype, tags = {} }, xml.dmt) end
 
--- xml parser that return
-function xml.parse(text, offset)
-  if not offset then offset = 1 end
+
+xml.html_options = { autoclose = { "br", "hr", "img", "input", "meta", "link" }, strict = false, halts = { "script", "style" } }
+
+function xml.parse(text, options)
+  options = options or {}
+  if options.infer == nil and not options.strict then options.infer = true end
+  local offset = options.offset or 1
   local tags = {}
+  local prolog = nil
+  local doctype, dt = nil
   local open_quote = false
   local open_tag = false
+  local open_comment = false
   local start_token = nil
-  local s,e = text:find("^%s*<%s*%?%s*xml[^>]+%?>", offset)
+  local s,e,p = text:find("^%s*<%s*%?%s*xml([^>]+)%?>", offset)
   if e then 
+    local vs, ve = p:find("version%s*=%s*")
+    local _, version = find_end_of_string(p, ve + 1)
+    local vs, ve = p:find("encoding%s*=%s*")
+    local _, encoding = find_end_of_string(p, ve + 1)
+    prolog = xml.prolog(version, encoding)
     offset = e + 1
   end
+  s,e,dt = text:find("^%s*<%s*%![dD][oO][cC][tT][yY][pP][eE]%s*([^>]+)>", offset)
+  if e then 
+    doctype = xml.doctype(dt)
+    offset = e + 1
+  end
+  if (doctype and doctype.definition == "html") or text:find("^s*<%s*[hH][tT][mM][lL]", offset) then
+    options = merge(xml.html_options, options)
+  end
+  local autoclose_tags, halt_tags = {}, {}
+  for i,v in ipairs(options.autoclose or {}) do autoclose_tags[v] = true end
+  for i,v in ipairs(options.halts or {}) do halt_tags[v] = true end
+  local doc = xml.document(prolog, doctype)
+  tags = { {} }
+  ::continue::
   while offset < #text do
-    ::continue::
-    if #tags > 0 then
-      local s,e, tag = text:find("^%s*<%s*/%s*([^>%s]+)%s*>", offset)
+    if open_comment then
+      local s,e = assert(text:find("^%s*%-%->", offset), "can't find closing comment")
+      table.insert(tags[#tags], xml.comment(text:sub(open_comment, s - 1)))
+      offset = e + 1
+      open_comment = false
+      goto continue
+    else
+      local s,e = text:find("%s*<!%-%-%s*", offset)
       if s then
-        assert(tag == tags[#tags].tag)
+        open_comment = e + 1
+        offset = e + 1
+        goto continue
+      end
+    end
+    if #tags > 0 and not open_tag then
+      if halt_tags[tags[#tags].tag] then
+        local s,e = text:find("<%s*/%s*" .. tags[#tags].tag .. "%s*>", offset)
+        assert(s, "cannot find closing tag for " .. tags[#tags].tag)
+        table.insert(tags[#tags], text:sub(offset, s - 1))
         offset = e + 1 
-        if #tags == 1 then
-          return tags[1]
-        else
+        table.insert(tags[#tags - 1], tags[#tags])
+        table.remove(tags)
+        goto continue
+      else
+        local s,e, tag = text:find("^<%s*/%s*([^>%s]+)%s*>", offset)
+        if s then
+          assert(tag == tags[#tags].tag, "closing tag </" .. tag .. "> at offset " .. offset .. " doesn't match last open tag <" .. tags[#tags].tag .. ">")
+          offset = e + 1 
           table.insert(tags[#tags - 1], tags[#tags])
           table.remove(tags)
           goto continue
@@ -73,60 +124,109 @@ function xml.parse(text, offset)
     end
     if open_tag then
       local s, e, autoclose = text:find("^%s*(/?)%s*>", offset)
+      if s and #autoclose == 0 and autoclose_tags[tags[#tags].tag] then
+        autoclose = "/"
+      end
       if s then
         open_tag = false
         offset = e + 1
         if #autoclose > 0 then
-          if #tags == 1 then
-            return tags[1]
-          else
-            table.insert(tags[#tags - 1], tags[#tags])
-            table.remove(tags)
-          end
+          table.insert(tags[#tags - 1], tags[#tags])
+          table.remove(tags)
         end
       else
-        local s, e, prop, quote = assert(text:find("^%s*([^=]+)%s*=%s*([\"'])", offset))
-        local ne, value = assert(find_end_of_string(text, e))
-        tags[#tags].props[prop] = value
-        offset = ne + 1
+        local s, e, prop, quote = text:find("^%s*([^=%>]+)%s*=%s*([\"'])", offset)
+        assert(s or not options.strict, "unrecognized property")
+        if s then
+          local ne, value = assert(find_end_of_string(text, e))
+          tags[#tags].props[prop] = value
+          offset = ne + 1
+        else
+          local s, e, prop, value = text:find("^%s*([^=%>]+)%s*=%s*(%S)", offset)
+          if s then 
+            tags[#tags].props[prop] = value
+            offset = e + 1
+          else
+            local s, e, prop, value = text:find("^%s*([^=%>]+)", offset)
+            assert(s, "unrecognizable property")
+            tags[#tags].props[prop] = true
+            offset = e + 1
+          end
+        end
       end
     else
-      local s, e, content = text:find("^%s*<%!%[CDATA%[%s*(.-)%s*%]%]%s*>", offset)
+      local s, e, content = text:find("^<%!%[CDATA%[%s*(.-)%s*%]%]%s*>", offset)
       if s then
         table.insert(tags[#tags], content);
         offset = e + 1
       else
-        local s, e, tag = text:find("^%s*<%s*([^%s>/]+)", offset)
+        local s, e, tag = text:find("^<%s*([^%s>/]+)", offset)
         if s then 
-          table.insert(tags, xml.new(tag, {}))
+          table.insert(tags, xml.tag(tag, {}))
           tags[#tags].parent = tags[#tags - 1]
           open_tag = true
           offset = e + 1
         else
-          s, e, content = assert(text:find("^%s*([^<]+)", offset))
+          s, e, content = assert(text:find("^([^<]+)", offset))
           table.insert(tags[#tags], content);
           offset = e + 1
         end
       end
     end
   end
-  error("didn't find closing tag for " .. tags[#tags].tag)
+  if #tags > 1 then error("didn't find closing tag for " .. tags[#tags].tag) end
+  doc.tags = tags[1]
+  return doc
 end
 
-function xml.print(doc, options)
-  if type(doc) ~= 'table' then return doc end
+function xml.html(text, options) return xml.parse(text, merge(xml.html_options, options or {})) end
+function xml.file(path, options) return xml[text:find("%.html$") and "html" or "parse"](assert(io.open(path, "rb")):read("*all"), options) end
+
+function xml.print(doc, options, depth)
+  options = options or {}
+  if not depth then depth = 0 end
+  if doc.tags then
+    local t = {}
+    if doc.prolog then table.insert(t, string.format('<?xml version="%s" encoding="%s"?>', doc.prolog.version, doc.prolog.encoding)) end
+    if doc.doctype then table.insert(t, string.format('<!DOCTYPE %s>', doc.doctype.definition)) end
+    for i,v in ipairs(doc.tags) do table.insert(t, xml.print(v, options, depth)) end
+    return table.concat(t, options.format == "pretty" and "\n" or "")
+  end
+  if type(doc) ~= 'table' then 
+    if type(doc) == 'string' then
+      if options.format == "compress" then
+        doc = doc:gsub("^%s+", " ")
+        doc = doc:gsub("%s+$", " ")
+      elseif options.format == "strip" or options.format == "pretty" then
+        doc = doc:gsub("^%s+", "")
+        doc = doc:gsub("%s+$", "")
+      end
+    end
+    return doc
+  end
   local str = "<" .. doc.tag
-  for k,v in pairs(doc.props) do
-    str = str .. string.format(" %s=\"%s\"", k, v:gsub("\\", "\\\\"):gsub('"', '\\"'))
+  for _, k in ipairs(sorted_keys(doc.props)) do
+    str = str .. string.format(" %s=\"%s\"", k, doc.props[k]:gsub("\\", "\\\\"):gsub('"', '\\"'))
   end
   if #doc == 0 then
     return str .. '/>'
   else
-    local children = {}
-    for i,v in ipairs(doc) do
-      table.insert(children, xml.print(v, options))
+    local ending, beginning, tab = "", "", ""
+    if options.format == "pretty" then
+      tab = options.indent or "\t"
+      beginning = string.rep(tab, depth)
+      ending = options.newline or "\n"
     end
-    return str .. ">" .. table.concat(children, "") .. "</" .. doc.tag .. ">"
+    if options.format == "pretty" and #doc == 1 and type(doc[1]) ~= "table" then
+      return str .. ">" .. xml.print(doc[1], options, depth + 1) .. "</" .. doc.tag .. ">"
+    else
+      local children = {}
+      for i,v in ipairs(doc) do
+        local result = beginning .. tab .. xml.print(v, options, depth + 1) .. ending
+        table.insert(children, result)
+      end
+      return str .. ">" .. ending .. table.concat(children) .. beginning .. "</" .. doc.tag .. ">"
+    end
   end
   return str
 end

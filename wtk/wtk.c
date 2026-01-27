@@ -364,7 +364,7 @@ int luaopen_wtk_c(lua_State* L) {
 		}
 		return 0;
 	}
-	int luaW_packlua(lua_State* L) { return 0; }
+	int luaW_packlua(lua_State* L, const char* directory) { return 0; }
 	#define main main_
 #else
 	#include <packed.lua.c>
