@@ -1,23 +1,36 @@
 local xml = {}
-xml.cmt = {}
+xml.cmt, xml.dtmt, xml.pmt = {}, {}, {}, {}
 xml.tmt = {
+  __len = function(self) return #self.nodes end,
   __index = function(self, key)
+    if math.type(key) == 'integer' then
+      return self.nodes[key]
+    end
     if type(key) ~= "string" then return nil end
     if rawget(rawget(self, "props"), key) then return rawget(rawget(self, "props"), key) end
-    for i, v in ipairs(self) do
-      if type(v) == 'table' then
-        if v.tag == key then
-          if #v == 0 then return nil end
-          if #v == 1 and type(v[1]) == 'string' then
-            return v[1]
-          end
-          return v
+    for i, v in ipairs(self.nodes) do
+      if type(v) == 'table' and v.tag == key then
+        if #v.nodes == 0 then return nil end
+        if #v.nodes == 1 and type(v.nodes[1]) == 'string' and v.nodes[1] then
+          return v.nodes[1]
         end
+        return v
       end
     end
     return nil
   end,
 }
+xml.dmt = {
+  __index = function(self, key)
+    if type(key) ~= "string" then return nil end
+    for i,v in ipairs(rawget(self, 'children')) do
+      if v.tag == key then return v end
+    end
+    return nil
+  end
+}
+
+
 local function sorted_keys(a) local t = {} for k,v in pairs(a) do table.insert(t, k) end table.sort(t) return t end
 local function merge(a,b) local t = {} for k,v in pairs(a) do t[k] = v end for k,v in pairs(b) do t[k] = v end return t end
 
@@ -44,11 +57,11 @@ local function find_end_of_string(str, offset)
   return nil
 end
 
-function xml.tag(tag, props, ...) return setmetatable({ tag = tag, props = props, ... }, xml.tmt) end
+function xml.tag(tag, props) return setmetatable({ tag = tag, props = props, children = { }, nodes = { } }, xml.tmt) end
 function xml.comment(comment) return setmetatable({ comment = comment }, xml.cmt) end
 function xml.prolog(version, encoding) return setmetatable({ version = version, encoding = encoding }, xml.pmt) end
 function xml.doctype(definition) return setmetatable({ definition = definition }, xml.dtmt) end
-function xml.document(prolog, doctype) return setmetatable({ prolog = prolog, doctype = doctype, tags = {} }, xml.dmt) end
+function xml.document(prolog, doctype) return setmetatable({ prolog = prolog, doctype = doctype, children = {}, nodes = {} }, xml.dmt) end
 
 
 xml.html_options = { autoclose = { "br", "hr", "img", "input", "meta", "link" }, strict = false, halts = { "script", "style" } }
@@ -85,12 +98,12 @@ function xml.parse(text, options)
   for i,v in ipairs(options.autoclose or {}) do autoclose_tags[v] = true end
   for i,v in ipairs(options.halts or {}) do halt_tags[v] = true end
   local doc = xml.document(prolog, doctype)
-  tags = { {} }
+  tags = { { children = doc.children, nodes = doc.nodes } }
   ::continue::
   while offset < #text do
     if open_comment then
       local s,e = assert(text:find("^%s*%-%->", offset), "can't find closing comment")
-      table.insert(tags[#tags], xml.comment(text:sub(open_comment, s - 1)))
+      table.insert(tags[#tags].children, xml.comment(text:sub(open_comment, s - 1)))
       offset = e + 1
       open_comment = false
       goto continue
@@ -106,9 +119,14 @@ function xml.parse(text, options)
       if halt_tags[tags[#tags].tag] then
         local s,e = text:find("<%s*/%s*" .. tags[#tags].tag .. "%s*>", offset)
         assert(s, "cannot find closing tag for " .. tags[#tags].tag)
-        table.insert(tags[#tags], text:sub(offset, s - 1))
+        local subtext = text:sub(offset, s - 1)
+        table.insert(tags[#tags].children, subtext)
+        if subtext:find("%S") then
+          table.insert(tags[#tags].nodes, subtext)
+        end
         offset = e + 1 
-        table.insert(tags[#tags - 1], tags[#tags])
+        table.insert(tags[#tags - 1].children, tags[#tags])
+        table.insert(tags[#tags - 1].nodes, tags[#tags])
         table.remove(tags)
         goto continue
       else
@@ -116,7 +134,8 @@ function xml.parse(text, options)
         if s then
           assert(tag == tags[#tags].tag, "closing tag </" .. tag .. "> at offset " .. offset .. " doesn't match last open tag <" .. tags[#tags].tag .. ">")
           offset = e + 1 
-          table.insert(tags[#tags - 1], tags[#tags])
+          table.insert(tags[#tags - 1].children, tags[#tags])
+          table.insert(tags[#tags - 1].nodes, tags[#tags])
           table.remove(tags)
           goto continue
         end
@@ -131,7 +150,8 @@ function xml.parse(text, options)
         open_tag = false
         offset = e + 1
         if #autoclose > 0 then
-          table.insert(tags[#tags - 1], tags[#tags])
+          table.insert(tags[#tags - 1].children, tags[#tags])
+          table.insert(tags[#tags - 1].nodes, tags[#tags])
           table.remove(tags)
         end
       else
@@ -157,7 +177,8 @@ function xml.parse(text, options)
     else
       local s, e, content = text:find("^<%!%[CDATA%[%s*(.-)%s*%]%]%s*>", offset)
       if s then
-        table.insert(tags[#tags], content);
+        table.insert(tags[#tags].children, content);
+        table.insert(tags[#tags].nodes, content);
         offset = e + 1
       else
         local s, e, tag = text:find("^<%s*([^%s>/]+)", offset)
@@ -168,14 +189,17 @@ function xml.parse(text, options)
           offset = e + 1
         else
           s, e, content = assert(text:find("^([^<]+)", offset))
-          table.insert(tags[#tags], content);
+          table.insert(tags[#tags].children, content);
+          local _, _, stripped = content:find("%s*(%S+)%s*")
+          if stripped then
+            table.insert(tags[#tags].nodes, stripped)
+          end
           offset = e + 1
         end
       end
     end
   end
   if #tags > 1 then error("didn't find closing tag for " .. tags[#tags].tag) end
-  doc.tags = tags[1]
   return doc
 end
 
@@ -185,7 +209,7 @@ function xml.file(path, options) return xml[text:find("%.html$") and "html" or "
 function xml.print(doc, options, depth)
   options = options or {}
   if not depth then depth = 0 end
-  if doc.tags then
+  if getmetatable(doc) == xml.dmt then
     local t = {}
     if doc.prolog then table.insert(t, string.format('<?xml version="%s" encoding="%s"?>', doc.prolog.version, doc.prolog.encoding)) end
     if doc.doctype then table.insert(t, string.format('<!DOCTYPE %s>', doc.doctype.definition)) end
@@ -221,7 +245,7 @@ function xml.print(doc, options, depth)
       return str .. ">" .. xml.print(doc[1], options, depth + 1) .. "</" .. doc.tag .. ">"
     else
       local children = {}
-      for i,v in ipairs(doc) do
+      for i,v in ipairs(doc.children) do
         local result = beginning .. tab .. xml.print(v, options, depth + 1) .. ending
         table.insert(children, result)
       end
@@ -230,7 +254,8 @@ function xml.print(doc, options, depth)
   end
   return str
 end
-xml.mt__tostring = xml.print
+xml.tmt.__tostring = xml.print
+xml.dmt.__tostring = xml.print
 
 local function gfind(self, t, tag)
   if self.tag == tag then

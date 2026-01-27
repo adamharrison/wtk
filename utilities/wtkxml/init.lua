@@ -95,12 +95,11 @@ end
 
 
 local function xml_print(doc, depth)
-  if not depth then depth = 0 end
-  if doc.tags then
+  if getmetatable(doc) == xml.dmt then
     local t = {}
     if doc.prolog then write(string.format('<?xml version="%s" encoding="%s"?>', doc.prolog.version, doc.prolog.encoding)) write(newline) end
     if doc.doctype then write(string.format('<!DOCTYPE %s>', doc.doctype.definition)) write(newline) end
-    for i,v in ipairs(doc.tags) do xml_print(v, options, depth) end
+    for i,v in ipairs(doc.children) do xml_print(v, depth) end
   else
     if type(doc) ~= 'table' then 
       if type(doc) == 'string' then
@@ -126,14 +125,14 @@ local function xml_print(doc, depth)
         end
         write("\"", "grey")
       end
-      if #doc == 0 then
+      if #doc.children == 0 then
         write("/>", "grey")
       else
         write(">", "grey")
-        if not args['no-format'] and #doc == 1 and type(doc[1]) ~= "table" then
-          write(doc[1], "normal")
+        if not args['no-format'] and #doc.children == 1 and type(doc.children[1]) ~= "table" then
+          write(doc.children[1], "normal")
         else
-          for i,v in ipairs(doc) do
+          for i,v in ipairs(doc.children) do
             if args['no-format'] or type(v) ~= 'string' or v:find("%S") then
               write(newline)
               xml_print(v, depth + 1)
@@ -153,9 +152,10 @@ end
 xpcall(function() 
   local parse = args.html and xml.html or xml.parse
   local doc = parse(io.stdin:read("*all"))
-  print(xml_print(doc, { format = args.strip and "strip" or (args.compress and "compact" or (not args["no-format"] and "pretty")) }))
+  print(xml_print(doc, 0))
   colorize("normal")
 end, function(err)
   io.stderr:write(debug.traceback(err, 2) .. "\n")
+  colorize("normal")
 end)
 os.exit(0) -- don't bother cleaning up cleanly
