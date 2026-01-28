@@ -11899,7 +11899,7 @@ int luaopen_wtk_client_c(lua_State* L) {
         cookies = {}\n\
       }\n\
     end\n\
-  ")
+  "))
     return lua_error(L);
   lua_pushvalue(L, -2);
   lua_call(L, 1, 0);
