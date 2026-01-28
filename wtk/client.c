@@ -11333,7 +11333,7 @@ static int f_client_socket_recvk(lua_State* L, int status, lua_KContext ctx) {
     }
   } else {
     recvd = read(socket->fd, buf, imin(sizeof(buf), bytes));
-    if (recvd == -1 && errno == ECONNRESET) {
+    if (recvd == 0 || (recvd == -1 && errno == ECONNRESET)) {
       socket->state = STATE_CLOSED;
       return 0;
     }
