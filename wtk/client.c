@@ -11692,7 +11692,7 @@ static int f_client_gc(lua_State* L) {
   return 0;
 }
 
-
+int luaW_loadstring(lua_State* L, const char* name, int offset, const char* str);
 int luaopen_wtk_client_c(lua_State* L) {
   luaL_newlib(L, socket_lib);
   lua_pushvalue(L, -1);
@@ -11702,7 +11702,7 @@ int luaopen_wtk_client_c(lua_State* L) {
   lua_setfield(L, -2, "__gc");
   lua_setmetatable(L, -2);
   
-  const char* lua_agent_code = "\n\
+  if (luaW_loadblock(L, __FILE__, __LINE__, "\n\
     local socket = ...\n\
     local PATHSEP = '/'\n\
     socket.ssl('system', '/tmp' .. PATHSEP .. 'ssl.certs', 0)\n\
@@ -11899,8 +11899,7 @@ int luaopen_wtk_client_c(lua_State* L) {
         cookies = {}\n\
       }\n\
     end\n\
-  ";
-  if (luaL_loadbuffer(L, lua_agent_code, strlen(lua_agent_code), "=wtk.client.c"))
+  ")
     return lua_error(L);
   lua_pushvalue(L, -2);
   lua_call(L, 1, 0);
