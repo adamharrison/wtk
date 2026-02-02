@@ -591,6 +591,20 @@ function resultset:translate_condition_value(condition)
   return '1=0'
 end
 
+function resultset:translate_column(column)
+  if type(column) ~= 'string' then return column end
+  local disambiguate = self._prefetch and #self._prefetch > 0
+  if disambiguate then
+    if grep(self._table.columns, function(c) return c.name == column end)[1] then return self._connection:escape("me", column) end
+    for i, relationship in ipairs(self._prefetch) do
+      if grep(relationship.foreign_table.columns, function(c) return c.name == column end)[1] then
+        return self._connection:escape(relationship.name, column)
+      end
+    end
+  end
+  return self._connection:escape(column)
+end
+
 function resultset:translate_conditions(condition)
   if type(condition) == 'string' then return condition end
   for key, value in pairs(condition) do
@@ -599,15 +613,15 @@ function resultset:translate_conditions(condition)
     else
       local t = type(value)
       if t == 'table' and getmetatable(value) == resultset then
-        return self._connection:escape(key) .. " IN (" .. value:as_sql() .. ")"
+        return self:translate_column(key) .. " IN (" .. value:as_sql() .. ")"
       elseif t == 'table' and #value > 0 then
-        return self._connection:escape(key) .. " IN " .. self:translate_condition_value(value)
+        return self:translate_column(key) .. " IN " .. self:translate_condition_value(value)
       elseif t == 'string' or t == 'number' or t == 'boolean' then
-        return self._connection:escape(key) .. " = " .. self:translate_condition_value(value)
+        return self:translate_column(key) .. " = " .. self:translate_condition_value(value)
       elseif value == NULL then
-        return self._connection:escape(key) .. " IS NULL"
+        return self:translate_column(key) .. " IS NULL"
       else
-        return self._connection:escape(key) .. " " .. self:translate_condition_value(value)
+        return self:translate_column(key) .. " " .. self:translate_condition_value(value)
       end
     end
   end
@@ -661,12 +675,12 @@ function resultset:as_sql(as_count)
         return e[1]
       elseif type(e) == 'table' then
         if e.desc then
-          return self._connection:escape(e.desc) .. " DESC"
+          return self:translate_column(e.desc) .. " DESC"
         elseif e.asc then
-          return self._connection:escape(e.asc)  .. " ASC"
+          return self:translate_column(e.asc)  .. " ASC"
         end
       else
-        return self._connection:escape(e) 
+        return self:translate_column(e) 
       end
     end, ", "))
   end
