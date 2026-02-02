@@ -1,12 +1,6 @@
-#ifndef lua_h
-    #include <lua.h>
-#endif
-#ifndef lualib_h
-    #include <lualib.h>
-#endif
-#ifndef lauxlib_h
-    #include <lauxlib.h>
-#endif
+#include <lua.h>
+#include <lualib.h>
+#include <lauxlib.h>
 #include <libpq-fe.h>
 #include <stdlib.h>
 #include <string.h>
