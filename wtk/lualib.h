@@ -1,4 +1,3 @@
-#define MAKE_LIB
 #ifndef lualib_h
 #define lualib_h
 #include "lua.h"

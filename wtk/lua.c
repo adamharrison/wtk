@@ -18691,4 +18691,5 @@ int main (int argc, char **argv) {
 }
 #endif
 #ifdef MAKE_LUAC
+#include "luac.c"
 #endif

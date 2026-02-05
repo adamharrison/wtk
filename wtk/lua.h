@@ -1,10 +1,10 @@
-#ifndef lua_h
-#define lua_h
-#define WTK_BUNDLED_LUA
 #define LUA_CORE
 #define LUA_LIB
 #define ltable_c
 #define lvm_c
+#define WTK_BUNDLED_LUA
+#ifndef lua_h
+#define lua_h
 #include <stdarg.h>
 #include <stddef.h>
 #ifndef luaconf_h
