@@ -11802,7 +11802,9 @@ int luaopen_wtk_client_c(lua_State* L) {
         local header_end, e = self.retained:find('\\r\\n\\r\\n')\n\
         if header_end then \n\
           _, e, res.version, res.code, res.status = self.retained:find('^HTTP/(%S+)%s+(%d+)%s+(.-)\\r\\n')\n\
+          assert(res.version, \"invalid header: \" .. self.retained)\n\
           res.code = tonumber(res.code)\n\
+          assert(res.code, \"invalid code\")\n\
           e = e + 1\n\
           while e < header_end do\n\
             local ns, ne, key, value = self.retained:find('^(%S+):%s*(.-)\\r\\n', e)\n\
