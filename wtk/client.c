@@ -11321,18 +11321,29 @@ static int f_client_socket_recvk(lua_State* L, int status, lua_KContext ctx) {
     recvd = mbedtls_ssl_read(&socket->ssl_context, (unsigned char*)buf, imin(bytes, sizeof(buf)));
     if (recvd == MBEDTLS_ERR_SSL_WANT_READ || recvd == MBEDTLS_ERR_SSL_WANT_WRITE)
       return socket_yield(L, socket->fd, recvd == MBEDTLS_ERR_SSL_WANT_WRITE ? "write" : "read", f_client_socket_recvk);
-    if (recvd == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) {
+    if (recvd <= 0) {
       socket->state = STATE_CLOSED;
-      return 0;
+      lua_pushnil(L);
+			if (recvd == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) 
+				lua_pushliteral(L, "closed");
+			else {
+				mbedtls_strerror(recvd, buf, sizeof(buf));
+				lua_pushstring(L, buf);
+			}
+      return 2;
     }
   } else {
     recvd = read(socket->fd, buf, imin(sizeof(buf), bytes));
-    if (recvd == 0 || (recvd == -1 && errno == ECONNRESET)) {
-      socket->state = STATE_CLOSED;
-      return 0;
-    }
     if (recvd == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
       return socket_yield(L, socket->fd, "read", f_client_socket_recvk);
+    if (recvd <= 0) {
+      socket->state = STATE_CLOSED;
+      if (recvd == -1 && errno == ECONNRESET)
+				lua_pushliteral(L, "closed");
+			else
+				lua_pushstring(L, strerror(errno));
+      return 2;
+    }
   }
   lua_pushlstring(L, buf, recvd);
   return 1;
@@ -11720,20 +11731,21 @@ int luaopen_wtk_client_c(lua_State* L) {
         return chunk\n\
       elseif bytes == '*a' then\n\
         local t = { self.retained }\n\
+        local chunk, err\n\
         while true do\n\
-          local chunk = self:recv(4096, blocking)\n\
+          chunk, err = self:recv(4096, blocking)\n\
           if not chunk then break end\n\
           table.insert(t, chunk)\n\
         end\n\
-        return table.concat(t)\n\
+        return table.concat(t), err\n\
       else\n\
         while true do\n\
           local chunk\n\
           if exact then\n\
             local total = ''\n\
             while #total < bytes do\n\
-              local chunk = self:read(bytes - #total, blocking)\n\
-              if not chunk then return total end\n\
+              local chunk, err = self:read(bytes - #total, blocking)\n\
+              if not chunk then return total, err end\n\
               if #chunk > 0 then total = total .. chunk end\n\
             end\n\
             return total\n\
@@ -11814,8 +11826,8 @@ int luaopen_wtk_client_c(lua_State* L) {
           self.retained = self.retained:sub(header_end + 4)\n\
           break\n\
         end\n\
-        local chunk = self:recv(4096, not coroutine.isyieldable())\n\
-        if not chunk then break end\n\
+        local chunk, err = self:recv(4096, not coroutine.isyieldable())\n\
+        if not chunk then return nil, err end\n\
         self.retained = self.retained .. chunk\n\
       end\n\
       return res\n\
@@ -11850,7 +11862,7 @@ int luaopen_wtk_client_c(lua_State* L) {
             local s = self.connections[key] or assert(socket:open(protocol, hostname, implied_port, not coroutine.isyieldable()))\n\
             self.connections[key] = s\n\
             if not headers.host then t.headers.host = hostname .. (explicit_port and (':' .. port) or '') end\n\
-            res = s:request(t)\n\
+            res = assert(s:request(t))\n\
             if res.headers['set-cookie'] then\n\
               for i,v in ipairs(type(res.headers['set-cookie']) == 'table' and res.headers['set-cookie'] or { res.headers['set-cookie'] }) do\n\
                 local _, e, name, value = v:find('^([^=]+)=([^;]+)')\n\
