@@ -410,14 +410,16 @@ function Server:default_handler(request)
 end
 function Server:route(method, path, func) 
   local target_path = "^" .. path .. "$"
-  for i,v in ipairs(self.routes[method]) do
-    if v.path == target_path then
-      v.handler = func
-      return
+  for _, method in ipairs(type(method) == 'table' and method or { method }) do
+    for i,v in ipairs(self.routes[method]) do
+      if v.path == target_path then
+        v.handler = func
+        return
+      end
     end
+    table.insert(self.routes[method], { path = target_path, handler = func }) 
+    table.sort(self.routes[method], function(a,b) return #a.path > #b.path end) 
   end
-  table.insert(self.routes[method], { path = target_path, handler = func }) 
-  table.sort(self.routes[method], function(a,b) return #a.path > #b.path end) 
 end
 function Server:get(path, func) return self:route("GET", path, func) end
 function Server:post(path, func) return self:route("POST", path, func) end

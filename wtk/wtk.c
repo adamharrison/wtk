@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <signal.h>
 #include <fcntl.h>
+#include <dirent.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 
@@ -207,14 +208,41 @@ typedef struct { int fd; double recurring; } countdown_t;
 
 #endif
 
-static int f_system_mtime(lua_State* L) {
+static int f_system_ls(lua_State* L) {
+	DIR* dir = opendir(luaL_checkstring(L, 1));
+	if (!dir) {
+		lua_pushnil(L);
+		lua_pushstring(L, strerror(errno));
+		return 2;
+	}
+	struct dirent* entry;
+	int i = 1;
+	lua_newtable(L);
+	while ((entry = readdir(dir)) != NULL) {
+		if (strcmp(entry->d_name, "..") == 0 || strcmp(entry->d_name, ".") == 0 )
+			continue;
+		lua_newtable(L);
+		lua_pushstring(L, entry->d_name);
+		lua_setfield(L, -2, "name");
+		lua_pushstring(L, entry->d_type == DT_DIR ? "dir" : (entry->d_type == DT_REG ? "file" : "other"));
+		lua_setfield(L, -2, "type");
+		lua_rawseti(L, -2, i++);
+	}
+	closedir(dir);
+	return 1;
+}
+
+static int f_system_stat(lua_State* L) {
 	struct stat file;
 	if (stat(luaL_checkstring(L, 1), &file)) {
 		lua_pushnil(L);
 		lua_pushstring(L, strerror(errno));
 		return 2;
 	}
-	lua_pushnumber(L, file.st_mtime);
+	lua_newtable(L);
+	lua_pushnumber(L, file.st_mtime), lua_setfield(L, -2, "mtime");
+	lua_pushinteger(L, file.st_size), lua_setfield(L, -2, "size");
+	lua_pushstring(L, S_ISREG(file.st_mode) ? "file" : (S_ISDIR(file.st_mode) ? "dir" : "other")), lua_setfield(L, -2, "type");
   return 1;
 }
 
@@ -231,8 +259,9 @@ static int f_system_isatty(lua_State* L){
 }
 
 static const luaL_Reg system_lib[] = {
-  { "mtime",    f_system_mtime  },
-  { "time",     f_system_time   },
+	{ "ls",       f_system_ls      },
+  { "stat",     f_system_stat   },
+  { "time",     f_system_time    },
   { "isatty",	 f_system_isatty  },
   { NULL,       NULL }
 };
@@ -295,6 +324,7 @@ int luaopen_wtk_c(lua_State* L) {
   package.loaded['wtk'] = wtk\n\
   package.loaded['wtk.c.loop'] = wtk.loop\n\
   package.loaded['wtk.c.system'] = wtk.system\n\
+  wtk.system.mtime = function(path) local s, err = wtk.system.stat(path) if not s then return nil, err end return s.mtime end\n\
 	function wtk.pargs(arguments, options, short_options)\n\
 		local args = {}\n\
 		local i = 1\n\
@@ -362,12 +392,13 @@ int luaopen_wtk_c(lua_State* L) {
 		if (luaW_loadblock(L, __FILE__, __LINE__, "\n\
 			print('#define WTK_PACKED\\nconst char* luaW_packed[] = {') \n\
 			for i,file in ipairs({ ... }) do \n\
-				local package = file:gsub('/', '.'):gsub('.*wtk', 'wtk'):gsub('%.lua$', '')\n\
+				local package, cont = file:gsub('/', '.'):gsub('.*wtk', 'wtk'):gsub('%.lua$', '')\n\
+				local type = file:find('%.lua$') and 'lua' or 'file'\n\
 				io.stderr:write('Packing ' .. file .. ' (' .. package .. ')...\\n')\n\
-				local f, err = load(io.lines(file,'L'), '='..package)\n\
-				if not f then error('Error packing ' .. file .. ' (' .. package .. '): ' .. err) end\n\
-				cont = string.dump(f):gsub('.',function(c) return string.format('\\\\x%02X',string.byte(c)) end) \n\
-				print('\t\\\"'..file:gsub('/', '.'):gsub('.*wtk', 'wtk'):gsub('%.lua$', '') ..'\\\",\\\"'..cont..'\\\",(void*)'..math.floor(#cont/3)..',')\n\
+				cont = io.open(file, 'rb'):read('*all')\n\
+				if type == 'lua' then cont = string.dump(assert(load(cont, '='..package))) end\n\
+				cont = cont:gsub('.',function(c) return string.format('\\\\x%02X',string.byte(c)) end) \n\
+				print('\t\\\"'..file:gsub('/', '.'):gsub('.*wtk', 'wtk'):gsub('%.lua$', '') ..'\\\",\\\"'..type..'\\\",\\\"'..cont..'\\\",(void*)'..math.floor(#cont/3)..',')\n\
 			end\n\
 			print(\"(void*)0, (void*)0, (void*)0\\n};\")")
 		) {
@@ -388,16 +419,24 @@ int luaopen_wtk_c(lua_State* L) {
 	#include <packed.lua.c>
 	int luaW_packlua(lua_State* L, const char* directory) {
 		#ifndef WTK_UNPACKED
+			lua_newtable(L);
+			lua_pushvalue(L, -1);
+			lua_setglobal(L, "packed");
 			lua_getfield(L, LUA_REGISTRYINDEX, LUA_PRELOAD_TABLE);
-			for (int i = 0; luaW_packed[i]; i += 3) {
+			for (int i = 0; luaW_packed[i]; i += 4) {
 				lua_pushstring(L, (strncmp(luaW_packed[i], directory, strlen(directory)) == 0) ? &luaW_packed[i][strlen(directory)+1] : luaW_packed[i]);
-				if (luaL_loadbuffer(L, luaW_packed[i+1], (size_t)luaW_packed[i+2], luaW_packed[i])) {
-					lua_pushfstring(L, "error loading %s: %s", luaW_packed[i], lua_tostring(L, -1));
-					return -1;
+				if (strcmp(luaW_packed[i+1], "lua") == 0)  {
+					if (luaL_loadbuffer(L, luaW_packed[i+2], (size_t)luaW_packed[i+3], luaW_packed[i])) {
+						lua_pushfstring(L, "error loading %s: %s", luaW_packed[i], lua_tostring(L, -1));
+						return -1;
+					}
+					lua_rawset(L, -3);
+				} else {
+					lua_pushlstring(L, luaW_packed[i+2], (size_t)luaW_packed[i+3]);
+					lua_rawset(L, -4);
 				}
-				lua_rawset(L, -3);
 			}
-			lua_pop(L, 1);
+			lua_pop(L, 2);
 		#else
 			#pragma message "Using unpacked lua modules."
 			lua_getglobal(L, "package");
