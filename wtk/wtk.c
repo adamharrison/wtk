@@ -302,6 +302,30 @@ int luaopen_wtk_c(lua_State* L) {
 	#endif
   if (luaW_loadblock(L, __FILE__, __LINE__, "local wtk = ...\n\
   wtk.Loop = wtk.loop\n\
+	function wtk.Loop:job_step(job)\n\
+		if coroutine.status(job.co) ~= 'dead' then\n\
+			local status, result = assert(coroutine.resume(job.co, job))\n\
+			if coroutine.status(job.co) ~= 'dead' then\n\
+				if type(result) == 'number' then result = { time = wtk.countdown.new(result) } end\n\
+				local waiting_obj, waiting_type = type(result) == 'table' and (result.socket or result.fd or result.time), type(result) == 'table' and result.type or 'read'\n\
+				if (not waiting_obj or not job.waiting) or (job.waiting.obj ~= waiting_obj or job.waiting_type) then\n\
+					if job.waiting then self:rm(job.waiting.obj) end\n\
+					job.waiting = nil\n\
+				end\n\
+				job.waiting = waiting_obj and { obj = waiting_obj, type = waiting_type, edge = result.edge }\n\
+				if job.waiting then \n\
+					self:add(job.waiting.obj, function() self:job_step(job) end, job.waiting.type, job.waiting.edge)\n\
+				else\n\
+					self:add(function() self:job_step(job) end)\n\
+				end\n\
+			end\n\
+		end\n\
+		if coroutine.status(job.co) == 'dead' and job.waiting and job.waiting.obj then \n\
+			self:rm(job.waiting.obj)\n\
+		end\n\
+		return job\n\
+	end\n\
+	function wtk.Loop:job(func) return self:job_step(wtk.Promise.new({ co = coroutine.create(function(job) try(function() job:resolve(func(job)) end, function(err) job:reject(err) end) end) })) end\n\
   wtk.Promise = {}\n\
   setmetatable({}, wtk.Promise)\n\
   wtk.Promise.__index = wtk.Promise\n\
