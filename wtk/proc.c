@@ -12,8 +12,6 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
-static int imin(int a, int b) { return a < b ? a : b; }
-
 static int f_stream_new(lua_State* L, int fd) {
     lua_newtable(L);
     lua_pushinteger(L, fd);
@@ -58,7 +56,7 @@ static int f_stream_read(lua_State* L) {
     if (blocking)
         fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) & ~O_NONBLOCK);
     while (total_read < bytes) {
-        int to_read = imin(bytes - total_read, sizeof(buffer));
+        int to_read = sizeof(buffer) < (bytes - total_read) ? sizeof(buffer) : (bytes - total_read);
         int result = to_read > 0 ? read(fd, buffer, to_read) : 0;
         if (result == 0 && total_read == 0)
             return 0;
@@ -100,9 +98,8 @@ static int f_proc_new(lua_State* L) {
     int stdout_pipe[2];
     int stderr_pipe[2];
     int stdin_pipe[2];
-    pipe(stdout_pipe);
-    pipe(stderr_pipe);
-    pipe(stdin_pipe);
+    if (pipe(stdout_pipe) || pipe(stderr_pipe) || pipe(stdin_pipe))
+        return luaL_error(L, "error creating pipes");
     luaL_checktype(L, 1, LUA_TTABLE);
     int pid = fork();
     if (pid < 0) {   
@@ -126,7 +123,7 @@ static int f_proc_new(lua_State* L) {
         dup2(stdin_pipe[0], 0);
         dup2(stdout_pipe[1], 1);
         dup2(stderr_pipe[1], 2);
-        execvp(argv[0], argv);
+        execvp(argv[0], (char* const*)argv);
         fprintf(stderr, "error opening process at %s: %s", argv[0], strerror(errno));
         fflush(stderr);
         exit(-1);
@@ -171,7 +168,7 @@ static int f_proc_kill(lua_State* L) {
     lua_getfield(L, 1, "pid");
     int pid = luaL_checkinteger(L, -1);
     kill(pid, sig);
-    return 0;
+    return 1;
 }
 
 static int f_proc_status(lua_State* L) {
@@ -201,16 +198,25 @@ static const luaL_Reg f_proc_api[] = {
     { NULL,        NULL            }
 };
 
-int luaopen_wtk_proc(lua_State* L) {
+#define luaW_defsignal(SIGNAL) lua_pushinteger(L, SIG##SIGNAL), lua_setfield(L, -2, #SIGNAL)
+int luaopen_wtk_proc_c(lua_State* L) {
     luaL_newmetatable(L, "wtk.proc.c");
     luaL_setfuncs(L, f_proc_api, 0);
+    lua_newtable(L);
+    luaW_defsignal(KILL), luaW_defsignal(TERM), luaW_defsignal(INT), luaW_defsignal(ABRT), luaW_defsignal(ALRM),
+        luaW_defsignal(BUS), luaW_defsignal(CHLD), luaW_defsignal(CONT), luaW_defsignal(FPE), luaW_defsignal(HUP),
+        luaW_defsignal(ILL), luaW_defsignal(PIPE), luaW_defsignal(QUIT), luaW_defsignal(SEGV), luaW_defsignal(STOP),
+        luaW_defsignal(TSTP), luaW_defsignal(TTIN), luaW_defsignal(TTOU), luaW_defsignal(SYS), luaW_defsignal(TRAP);
+    lua_setfield(L, -2, "signals");
     luaL_newmetatable(L, "wtk.proc.c.stream");
     luaL_setfuncs(L, f_stream_api, 0);
-    const char* lua_stream_code = "\n\
+    if (luaW_loadblock(L, __FILE__, __LINE__, "\n\
     local proc, stream = ...\n\
     proc.__index = proc\n\
     proc.__stream = stream\n\
     stream.__index = stream\n\
+    local _kill = proc.kill\n\
+    function proc:kill(sig) return _kill(self, type(sig) == 'string' and self.signals[sig] or sig) end\n\
     function proc:join()\n\
         while true do\n\
             local status = self:status(not coroutine.isyieldable())\n\
@@ -237,8 +243,8 @@ int luaopen_wtk_proc(lua_State* L) {
         if not self.buffer then self.buffer = '' end\n\
         local yieldable = coroutine.isyieldable()\n\
         if type(target) == 'number' then \n\
-            local bytes = self.buffer\n\
             if target > #self.buffer then self.buffer = self.buffer .. (self:__read(target - #self.buffer) or '') end\n\
+            local bytes = self.buffer\n\
             self.buffer = bytes:sub(target)\n\
             return bytes:sub(1, target)\n\
         else\n\
@@ -250,16 +256,24 @@ int luaopen_wtk_proc(lua_State* L) {
             else\n\
                 error('unknown read target', 1)\n\
             end\n\
-            local chunks = { self.buffer }\n\
-            self.buffer = ''\n\
+            local chunks = { }\n\
             while true do\n\
-                local chunk = self:__read(16*1024, not yieldable)\n\
+                local chunk\n\
+                if #chunks == 0 and self.buffer and #self.buffer > 0 then\n\
+                    chunk = self.buffer\n\
+                else\n\
+                    chunk = self:__read(16*1024, not yieldable)\n\
+                end\n\
                 if not chunk then break end\n\
                 if #chunk > 0 then\n\
-                    local s,e = target == 'l' and chunk:find('\\n')\n\
+                    local s,e\n\
+                    if target == 'l' then\n\
+                        s,e = chunk:find('[\\r\\n]+')\n\
+                    end\n\
                     if s then\n\
                         table.insert(chunks, chunk:sub(1, s - 1))\n\
                         self.buffer = chunk:sub(e + 1)\n\
+                        break\n\
                     else\n\
                         table.insert(chunks, chunk)\n\
                     end\n\
@@ -270,8 +284,7 @@ int luaopen_wtk_proc(lua_State* L) {
             return table.concat(chunks)\n\
         end\n\
     end\n\
-    return proc";
-    if (luaL_loadstring(L, lua_stream_code))
+    return proc"))
         return lua_error(L);
     lua_pushvalue(L, -3);
     lua_pushvalue(L, -3);
