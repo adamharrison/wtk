@@ -175,11 +175,12 @@ typedef struct { int fd; double recurring; } countdown_t;
 	};
 	
 	static int f_countdown_new(lua_State* L) {
+		double offset = luaL_checknumber(L, 1);
+		double recurring = luaL_optnumber(L, 2, 0);
 		countdown_t* countdown = lua_newuserdata(L, sizeof(countdown_t));
 		luaL_setmetatable(L, "wtk.c.countdown");
 		countdown->fd = timerfd_create(CLOCK_MONOTONIC, 0);
-		double offset = luaL_checknumber(L, 1);
-		countdown->recurring = luaL_optnumber(L, 2, 0);
+		countdown->recurring = recurring;
 		struct timespec now = {0};
 		struct itimerspec new_value = {0};
 		if (clock_gettime(CLOCK_MONOTONIC, &now) == -1)
@@ -232,6 +233,16 @@ static int f_system_ls(lua_State* L) {
 	return 1;
 }
 
+static int f_system_mkdir(lua_State* L) {
+	if (mkdir(luaL_checkstring(L, 1), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH)) {
+		lua_pushnil(L);
+		lua_pushstring(L, strerror(errno));
+		return 2;
+	}
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
 static int f_system_stat(lua_State* L) {
 	struct stat file;
 	if (stat(luaL_checkstring(L, 1), &file)) {
@@ -260,7 +271,8 @@ static int f_system_isatty(lua_State* L){
 
 static const luaL_Reg system_lib[] = {
 	{ "ls",       f_system_ls      },
-  { "stat",     f_system_stat   },
+	{ "mkdir",    f_system_mkdir   },
+  { "stat",     f_system_stat    },
   { "time",     f_system_time    },
   { "isatty",	 f_system_isatty  },
   { NULL,       NULL }
@@ -290,6 +302,16 @@ int luaopen_wtk_c(lua_State* L) {
 	#endif
   if (luaW_loadblock(L, __FILE__, __LINE__, "local wtk = ...\n\
   wtk.Loop = wtk.loop\n\
+  wtk.Promise = {}\n\
+  setmetatable({}, wtk.Promise)\n\
+  wtk.Promise.__index = wtk.Promise\n\
+	function wtk.Promise.new(hash) local self = setmetatable({ resolved = nil, rejected = nil, doneh = {}, failh = {} }, wtk.Promise) for k,v in pairs(hash or {}) do self[k] = v end return self end\n\
+  function wtk.Promise:on(done, fail) if self.resolved and done then done(table.unpack(self.resolved)) end if self.rejected and fail then fail(table.unpack(self.rejected)) end table.insert(self.doneh, done) table.insert(self.failh, fail) return self end\n\
+  function wtk.Promise:done(func) return self:on(func) end\n\
+  function wtk.Promise:fail(func) return self:on(nil, func) end\n\
+  function wtk.Promise:always(func) return self:on(func, func) end\n\
+  function wtk.Promise:resolve(...) self.resolved = { ... } for k,v in ipairs(self.doneh) do v(table.unpack(self.resolved)) end return self end\n\
+  function wtk.Promise:reject(...) self.rejected = { ... } for k,v in ipairs(self.failh) do v(table.unpack(self.rejected)) end return self end\n\
   wtk.error = {\n\
 		__tostring = function(self) return tostring(self.error) end,\n\
 		new = function(err, level)\n\
@@ -308,6 +330,8 @@ int luaopen_wtk_c(lua_State* L) {
 				xpcall(catch, function(err) \n\
 					catch_error = wtk.error.new(err, 3)\n\
 				end, caught_error)\n\
+			else\n\
+				catch_error = caught_error\n\
 			end\n\
 		end, ...) }\n\
 		if always then\n\
@@ -342,7 +366,7 @@ int luaopen_wtk_c(lua_State* L) {
 			if options[option_name] then\n\
 				local flag_type = options[option_name]\n\
 				if flag_type == 'flag' then\n\
-					args[option] = (option_name == option or not option:find('^no-')) and true or false\n\
+					args[option_name] = (option_name == option or not option:find('^no-')) and true or false\n\
 				elseif flag_type == 'string' or flag_type == 'number' or flag_type == 'array' then\n\
 					if not value or value == '' then\n\
 						if i == #arguments then error('option ' .. option .. ' requires a ' .. flag_type) end\n\
@@ -493,6 +517,7 @@ int luaW_signal(lua_State* L) {
 	luaWLs[i] = L;
   signal(SIGINT, luaW_exitsignal);
   signal(SIGTERM, luaW_exitsignal);
+  signal(SIGPIPE, SIG_IGN);
   lua_newtable(L);
   lua_newtable(L);
   lua_pushcfunction(L, luaW_signalgc);
