@@ -337,7 +337,7 @@ int luaopen_wtk_c(lua_State* L) {
   function wtk.Promise:resolve(...) self.resolved = { ... } for k,v in ipairs(self.doneh) do v(table.unpack(self.resolved)) end return self end\n\
   function wtk.Promise:reject(...) self.rejected = { ... } for k,v in ipairs(self.failh) do v(table.unpack(self.rejected)) end return self end\n\
   wtk.error = {\n\
-		__tostring = function(self) return tostring(self.error) end,\n\
+		__tostring = function(self) return tostring(self.error or self.stack) end,\n\
 		new = function(err, level)\n\
 			if type(err) == 'table' and getmetatable(err) == wtk.error then return err end\n\
 			return setmetatable({ error = err, stack = debug.traceback(nil, level or 2) }, wtk.error)\n\
@@ -404,6 +404,8 @@ int luaopen_wtk_c(lua_State* L) {
 					else\n\
 						args[option] = value\n\
 					end\n\
+				else\n\
+					error('unknown flag type ' .. flag_type .. ' for ' .. option_name)\n\
 				end\n\
 			else\n\
 				local flags = nil\n\

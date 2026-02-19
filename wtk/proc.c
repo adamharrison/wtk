@@ -245,7 +245,7 @@ int luaopen_wtk_proc_c(lua_State* L) {
         if type(target) == 'number' then \n\
             if target > #self.buffer then self.buffer = self.buffer .. (self:__read(target - #self.buffer) or '') end\n\
             local bytes = self.buffer\n\
-            self.buffer = bytes:sub(target)\n\
+            self.buffer = bytes:sub(target + 1)\n\
             return bytes:sub(1, target)\n\
         else\n\
             assert(type(target) == 'string', 'unknown read target')\n\

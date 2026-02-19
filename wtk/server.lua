@@ -5,6 +5,7 @@ local system = wtk.system
 local socket, sha1, base64 = driver.socket, driver.sha1, driver.base64
 local PACKET_SIZE = 4096
 
+local function merge(t1, t2) local t = {} for k,v in pairs(t1) do t[k] = v end for k,v in pairs(t2) do t[k] = v end return t end
 local Server = { Socket = driver.socket, sha1 = driver.sha1, base64 = driver.base64 }
 Server.__index = Server
 
@@ -65,13 +66,13 @@ function Server.Websocket:read()
 end
 
 
-local Response = { }
-Response.__index = Response
-function Response.new(code, headers, body) return setmetatable({ code = code, headers = headers or {}, body = body }, Response) end
-function Response:write_header(client)
+Server.Response = { }
+Server.Response.__index = Server.Response
+function Server.Response.new(code, headers, body) return setmetatable({ code = code, headers = headers or {}, body = body }, Server.Response) end
+function Server.Response:write_header(client)
   if client.closed then return end
   local parts = { string.format("%s %d %s\r\n", "HTTP/1.1", self.code, client.server.codes[self.code]) }
-  if self.body and type(self.body) == 'string' and not self.headers['content-length'] then self.headers['content-length'] = #self.body end
+  if self.body and type(self.body) == 'string' and not self.headers['content-length'] and self.headers['transfer-encoding'] ~= 'chunked' then self.headers['content-length'] = #self.body end
   if not self.headers['connection'] or self.headers['connection']:find("^%s*%") then self.headers['connection'] = 'keep-alive' end
   if not self.headers['date'] or self.headers['date']:find("^%s*%") then self.headers['date'] = os.date("!%a, %d %b %Y %H:%M:%S GMT") end
   for key,value in pairs(self.headers) do table.insert(parts, string.format("%s: %s\r\n", key, value)) end
@@ -79,7 +80,7 @@ function Response:write_header(client)
   client:write_block(table.concat(parts))
 end
 
-function Response:write_encoded(client, chunk)
+function Server.Response:write_encoded(client, chunk)
   if self.headers['transfer-encoding'] == 'chunked' then
     client:write_block(string.format("%x\r\n", #chunk))
     client:write_block(chunk)
@@ -89,7 +90,7 @@ function Response:write_encoded(client, chunk)
   end
 end
 
-function Response:write(client)
+function Server.Response:write(client)
   if client.closed then return end
   self:write_header(client)
   if self.body then 
@@ -187,16 +188,17 @@ function Request:read(len)
 end
 function Request:respond(code, headers, body) 
   self.responded = true 
-  if not headers['set-cookie'] and self.cookies then 
+  if headers and not headers['set-cookie'] and self.cookies then 
     local cookies = {}
     for key,value in pairs(self.cookies) do table.insert(cookies, key .. "=" .. tostring(value):gsub("[%c:/?#%[%]@!$&'\"%(%)*+,;=%%]", function(e) return "%" .. string.format("%02x", e:byte(1)) end)) end
     if #cookies > 0 then headers['set-cookie'] = table.concat(cookies, ';') end
   end
-  Response.new(code, headers, body):write(self.client) 
-  return self 
+  local res = (type(code) == 'table' and getmetatable(code) == Server.Response and code or Server.Response.new(code, headers, body))
+  res:write(self.client)
+  return res
 end
 function Request:redirect(path) return self:respond(302, { ["location"] = path }) end
-function Request:file(path) 
+function Request:file(path, headers)
   assert(not path:find("%.%."), "invalid path") 
   local stat = assert(wtk.system.stat(path), { code = 404 })
   assert(stat.type == "file", { code = 404 })
@@ -205,7 +207,7 @@ function Request:file(path)
     local hs, he = self.headers['range']:match("(%d*)%-(%d*)")
     s, e = tonumber(hs), he ~= "" and tonumber(he) or stat.size
   end
-  local headers = { ['last-modified'] = os.date("%a, %d %b %Y %H:%M:%S GMT", stat.mtime), ['content-length'] = e - s, ['accept-ranges'] = 'bytes', ['content-type'] = self.client.server:mimetype(path), ["cache-control"] = not self.client.server.debug and "max-age=86400" or nil }
+  headers = merge({ ['last-modified'] = os.date("%a, %d %b %Y %H:%M:%S GMT", stat.mtime), ['content-length'] = e - s, ['accept-ranges'] = 'bytes', ['content-type'] = self.client.server:mimetype(path), ["cache-control"] = not self.client.server.debug and "max-age=86400" or nil }, headers or {})
   local f = assert(io.open(path, "rb"), { code = 404 })
   if self.headers['range'] then
     headers['content-range'] = string.format("bytes %d-%d/%d", s, e - 1, stat.size)
@@ -219,6 +221,7 @@ function Request:file(path)
     return chunk
   end) 
 end
+function Request:attachment(path, headers) return self:file(path, merge(headers or {}, { ["Content-Disposition"] = "attachment; filename=\"" .. path:gsub(".*/", ""):gsub("\"", "") .. "\"" })) end
 function Request:parts()
   local boundary = self.headers['content-type']:match("multipart/form-data;%s+boundary=(.+)$")
   if not boundary then return function() return nil end end
@@ -320,14 +323,15 @@ function Client:process()
     local status, result = coroutine.resume(self.co)
     if coroutine.status(self.co) ~= "dead" then
       if result then
+        if type(result) == 'number' then result = { timeout = result } end
         if self.waiting and self.waiting ~= result.socket or (self.waiting_type ~= result.waiting_type) then   
           self.server.loop:rm(self.waiting) 
           self.waiting = nil 
           self.waiting_type = nil
         end
-        if not self.waiting and (result.socket or result.fd or result.waiting) then
+        if not self.waiting and (result.socket or result.fd or result.timeout) then
           self.waiting_type = result.type or "read"
-          self.waiting = self.server.loop:add(result.socket or result.fd or timer.new(result.timeout), function() 
+          self.waiting = self.server.loop:add(result.socket or result.fd or wtk.countdown.new(result.timeout), function() 
             self:process() 
           end, self.waiting_type, result.edge)
         end
