@@ -136,24 +136,28 @@ typedef struct { int fd; double recurring; } countdown_t;
 			for (int n = 0; n < nfds; ++n) {
 				lua_pushinteger(L, events[n].data.fd);
 				lua_rawget(L, -2);
-				lua_rawgeti(L, -1, 2);
-				countdown_t* countdown = luaL_testudata(L, -1, "wtk.c.countdown");
-				if (countdown) {
-					long long length;
-					length = read(countdown->fd, &length, sizeof(length));
+				if (!lua_isnil(L, -1)) { // in the case where we've removed the callback, and there are lingering events.
+					lua_rawgeti(L, -1, 2);
+					countdown_t* countdown = luaL_testudata(L, -1, "wtk.c.countdown");
+					if (countdown) {
+						long long length;
+						length = read(countdown->fd, &length, sizeof(length));
+					}
+					lua_pop(L, 1);
+					lua_rawgeti(L, -1, 1);
+					if (lua_pcall(L, 0, 1, 0))
+						return luaL_error(L, "error running callback: %s", lua_tostring(L, -1));
+					if (lua_type(L, -1) == LUA_TBOOLEAN && !lua_toboolean(L, -1))  {
+						epoll_ctl(luaL_checkinteger(L, -1), EPOLL_CTL_DEL, events[n].data.fd, NULL);
+						luaL_getsubtable(L, 1, "fds");
+						lua_pushinteger(L, events[n].data.fd);
+						lua_pushnil(L); 
+						lua_rawset(L, -3);
+					}
+					lua_pop(L, 2);
+				} else {
+					lua_pop(L, 1);
 				}
-				lua_pop(L, 1);
-				lua_rawgeti(L, -1, 1);
-				if (lua_pcall(L, 0, 1, 0))
-					return luaL_error(L, "error running callback: %s", lua_tostring(L, -1));
-				if (lua_type(L, -1) == LUA_TBOOLEAN && !lua_toboolean(L, -1))  {
-					epoll_ctl(luaL_checkinteger(L, -1), EPOLL_CTL_DEL, events[n].data.fd, NULL);
-					luaL_getsubtable(L, 1, "fds");
-					lua_pushinteger(L, events[n].data.fd);
-					lua_pushnil(L); 
-					lua_rawset(L, -3);
-				}
-				lua_pop(L, 2);
 			}
 		}
 		return 1;
@@ -181,15 +185,12 @@ typedef struct { int fd; double recurring; } countdown_t;
 		luaL_setmetatable(L, "wtk.c.countdown");
 		countdown->fd = timerfd_create(CLOCK_MONOTONIC, 0);
 		countdown->recurring = recurring;
-		struct timespec now = {0};
 		struct itimerspec new_value = {0};
-		if (clock_gettime(CLOCK_MONOTONIC, &now) == -1)
-			return luaL_error(L, "can't get time: %s", strerror(errno));
-		new_value.it_value.tv_sec = now.tv_sec + (int)offset;
-		new_value.it_value.tv_nsec = now.tv_nsec + (int)(fmod(offset, 1.0) * (1000000000.0));
+		new_value.it_value.tv_sec = (int)offset;
+		new_value.it_value.tv_nsec = (int)(fmod(offset, 1.0) * (1000000000.0));
 		new_value.it_interval.tv_sec = (int)countdown->recurring;
 		new_value.it_interval.tv_nsec = (int)(fmod(countdown->recurring, 1.0) * (1000000000.0));
-		if (timerfd_settime(countdown->fd, TFD_TIMER_ABSTIME, &new_value, NULL) == -1)
+		if (timerfd_settime(countdown->fd, 0, &new_value, NULL) == -1)
 			return luaL_error(L, "can't set timer: %s", strerror(errno));
 		return 1;
 	}
@@ -445,10 +446,10 @@ int luaopen_wtk_c(lua_State* L) {
 				local package, cont = file:gsub('/', '.'):gsub('.*wtk', 'wtk'):gsub('%.lua$', '')\n\
 				local type = file:find('%.lua$') and 'lua' or 'file'\n\
 				io.stderr:write('Packing ' .. file .. ' (' .. package .. ')...\\n')\n\
-				cont = io.open(file, 'rb'):read('*all')\n\
+				cont = assert(io.open(file, 'rb'), 'Cannot find file ' .. file):read('*all')\n\
 				if type == 'lua' then cont = string.dump(assert(load(cont, '='..package))) end\n\
 				cont = cont:gsub('.',function(c) return string.format('\\\\x%02X',string.byte(c)) end) \n\
-				print('\t\\\"'..file:gsub('/', '.'):gsub('.*wtk', 'wtk'):gsub('%.lua$', '') ..'\\\",\\\"'..type..'\\\",\\\"'..cont..'\\\",(void*)'..math.floor(#cont/3)..',')\n\
+				print('\t\\\"'..file:gsub('/', '.'):gsub('.*wtk', 'wtk'):gsub('%.lua$', '') ..'\\\",\\\"'..type..'\\\",\\\"'..cont..'\\\",(void*)'..math.floor(#cont/4)..',')\n\
 			end\n\
 			print(\"(void*)0, (void*)0, (void*)0\\n};\")")
 		) {

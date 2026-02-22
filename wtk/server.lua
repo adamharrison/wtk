@@ -200,6 +200,9 @@ end
 function Request:redirect(path) return self:respond(302, { ["location"] = path }) end
 function Request:file(path, headers)
   assert(not path:find("%.%."), "invalid path") 
+  if not wtk.system.stat(path) then
+    return self:respond(200, merge({ ['content-type'] = self.client.server:mimetype(path) }, headers or {}), assert(packed[path], { code = 404 }))
+  end
   local stat = assert(wtk.system.stat(path), { code = 404 })
   assert(stat.type == "file", { code = 404 })
   local s, e = 0, stat.size
