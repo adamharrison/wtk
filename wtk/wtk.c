@@ -244,6 +244,16 @@ static int f_system_mkdir(lua_State* L) {
 	return 1;
 }
 
+static int f_system_rmdir(lua_State* L) {
+	if (rmdir(luaL_checkstring(L, 1))) {
+		lua_pushnil(L);
+		lua_pushstring(L, strerror(errno));
+		return 2;
+	}
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
 static int f_system_stat(lua_State* L) {
 	struct stat file;
 	if (stat(luaL_checkstring(L, 1), &file)) {
@@ -273,6 +283,7 @@ static int f_system_isatty(lua_State* L){
 static const luaL_Reg system_lib[] = {
 	{ "ls",       f_system_ls      },
 	{ "mkdir",    f_system_mkdir   },
+	{ "rmdir",    f_system_rmdir   },
   { "stat",     f_system_stat    },
   { "time",     f_system_time    },
   { "isatty",	 f_system_isatty  },
@@ -398,7 +409,9 @@ int luaopen_wtk_c(lua_State* L) {
 						value = arguments[i+1]\n\
 						i = i + 1\n\
 					end\n\
-					if flag_type == 'number' and tonumber(value) == nil then error('option ' .. option .. ' should be a number') end\n\
+					if flag_type == 'number' then\n\
+						value = assert(tonumber(value), 'option ' .. option .. ' should be a number')\n\
+					end\n\
 					if flag_type == 'array' then\n\
 						args[option] = args[option] or {}\n\
 						table.insert(args[option], value)\n\
