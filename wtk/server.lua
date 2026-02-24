@@ -97,7 +97,10 @@ function Server.Response:write(client)
     if type(self.body) == 'function' then
       for chunk in self.body do
         if #chunk > 0 then
-          if client.closed then error({ code = 400, message = "Client unexpectedly closed connection.", verbose = true }) end
+          if client.closed then 
+            if self.code == 206 then break end
+            error({ code = 400, message = "Client unexpectedly closed connection.", verbose = true }) 
+          end
           self:write_encoded(client, chunk)
         end
         coroutine.yield()

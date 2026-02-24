@@ -12,10 +12,12 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
-static int f_stream_new(lua_State* L, int fd) {
+static int f_stream_new(lua_State* L, int fd, const char* type) {
     lua_newtable(L);
     lua_pushinteger(L, fd);
     lua_setfield(L, -2, "fd");
+    lua_pushstring(L, type);
+    lua_setfield(L, -2, "type");
     luaL_setmetatable(L, "wtk.proc.c.stream");
     return 1;
 }
@@ -137,15 +139,15 @@ static int f_proc_new(lua_State* L) {
     lua_newtable(L);
     lua_pushinteger(L, pid);
     lua_setfield(L, -2, "pid");
-    f_stream_new(L, stdout_pipe[0]);
+    f_stream_new(L, stdout_pipe[0], "read");
     lua_pushvalue(L, -2);
     lua_setfield(L, -2, "proc");
     lua_setfield(L, -2, "stdout");
-    f_stream_new(L, stderr_pipe[0]);
+    f_stream_new(L, stderr_pipe[0], "read");
     lua_pushvalue(L, -2);
     lua_setfield(L, -2, "proc");
     lua_setfield(L, -2, "stderr");
-    f_stream_new(L, stdin_pipe[1]);
+    f_stream_new(L, stdin_pipe[1], "write");
     lua_pushvalue(L, -2);
     lua_setfield(L, -2, "proc");
     lua_setfield(L, -2, "stdin");
@@ -221,7 +223,7 @@ int luaopen_wtk_proc_c(lua_State* L) {
         while true do\n\
             local status = self:status(not coroutine.isyieldable())\n\
             if status then return status end\n\
-            coroutine.yield({ fd = self.stderr.fd })\n\
+            self.stderr:yield()\n\
         end\n\
     end\n\
     function proc.new(prog, options)\n\
@@ -235,10 +237,11 @@ int luaopen_wtk_proc_c(lua_State* L) {
             if total_written > 0 then\n\
                 chunk = chunk:sub(total_written + 1)\n\
             elseif yieldable then\n\
-                coroutine.yield({ fd = stream.fd, type = 'write' })\n\
+                self:yield()\n\
             end\n\
         end\n\
     end\n\
+    function stream:yield() coroutine.yield({ fd = self.fd, type = self.type }) end\n\
     function stream:read(target)\n\
         if not self.buffer then self.buffer = '' end\n\
         local yieldable = coroutine.isyieldable()\n\

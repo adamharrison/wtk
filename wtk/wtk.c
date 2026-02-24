@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <lua.h>
 #include <lualib.h>
 #include <lauxlib.h>
@@ -19,6 +20,7 @@
 
 typedef struct { int fd; } generic_fd_t;
 typedef struct { int fd; double recurring; } countdown_t;
+typedef struct { int fd[2]; } pipe_t;
 
 #define DIRSEP '/'
 
@@ -93,7 +95,8 @@ typedef struct { int fd; double recurring; } countdown_t;
 				fd = lua_tofd(L, 2);
 			}
 			struct epoll_event event = { .events = mask, .data = { .fd = fd } };
-			epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &event);
+			if (epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &event))
+				return luaL_error(L, "unable to add fd %d: %s", fd, strerror(errno));
 			luaL_getsubtable(L, 1, "fds");
 			lua_pushinteger(L, fd); 
 			lua_pushvalue(L, table);
@@ -104,8 +107,8 @@ typedef struct { int fd; double recurring; } countdown_t;
 	}
 
 	static int f_loop_rm(lua_State* L) {
-		lua_getfield(L, 1, "epollfd");
 		int fd = lua_tofd(L, 2);
+		lua_getfield(L, 1, "epollfd");
 		epoll_ctl(luaL_checkinteger(L, -1), EPOLL_CTL_DEL, fd, NULL);
 		luaL_getsubtable(L, 1, "fds");
 		lua_pushinteger(L, fd);
@@ -118,7 +121,7 @@ typedef struct { int fd; double recurring; } countdown_t;
 	static int f_loop_run(lua_State* L) {
 		lua_getfield(L, 1, "epollfd");
 		int epollfd = luaL_checkinteger(L, -1);
-		struct epoll_event ev, events[100];
+		struct epoll_event ev = {0}, events[100] = {0};
 		luaL_getsubtable(L, 1, "fds");
 		while (1) {
 			luaL_getsubtable(L, 1, "deferred");
@@ -147,17 +150,9 @@ typedef struct { int fd; double recurring; } countdown_t;
 					lua_rawgeti(L, -1, 1);
 					if (lua_pcall(L, 0, 1, 0))
 						return luaL_error(L, "error running callback: %s", lua_tostring(L, -1));
-					if (lua_type(L, -1) == LUA_TBOOLEAN && !lua_toboolean(L, -1))  {
-						epoll_ctl(luaL_checkinteger(L, -1), EPOLL_CTL_DEL, events[n].data.fd, NULL);
-						luaL_getsubtable(L, 1, "fds");
-						lua_pushinteger(L, events[n].data.fd);
-						lua_pushnil(L); 
-						lua_rawset(L, -3);
-					}
 					lua_pop(L, 2);
-				} else {
+				} else 
 					lua_pop(L, 1);
-				}
 			}
 		}
 		return 1;
@@ -205,6 +200,78 @@ typedef struct { int fd; double recurring; } countdown_t;
 	static const luaL_Reg countdown_lib[] = {
 		{ "new",      f_countdown_new   },
 		{ "__gc",		 f_countdown_gc },
+		{ NULL,       NULL }
+	};
+
+	
+	static int f_pipe_new(lua_State* L) {
+		pipe_t* pip = lua_newuserdata(L, sizeof(pipe_t));
+		luaL_setmetatable(L, "wtk.c.pipe");
+		if (pipe(pip->fd) == -1)
+			return luaL_error(L, "can't create pipe: %s", strerror(errno));
+		for (int i = 0; i < 2; ++i) {
+			int flags = fcntl(pip->fd[i], F_GETFL, 0);
+			if (flags == -1 || fcntl(pip->fd[i], F_SETFL, (flags | O_NONBLOCK)) == -1) 
+				return luaL_error(L, "error setting non-blocking: %s", strerror(errno));
+		}
+		return 1;
+	}
+
+	static int f_pipe_read(lua_State* L) {
+		pipe_t* pip = luaL_checkudata(L, 1, "wtk.c.pipe");
+		size_t size = luaL_checkinteger(L, 2);
+		char* buffer = malloc(size + 1);
+		int length = read(pip->fd[0], buffer, size);
+		if (length == 0)
+			return 0;
+		if (length == -1) {
+			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+				lua_pushliteral(L, "");
+				return 1;
+			}
+			lua_pushnil(L);
+			lua_pushstring(L, strerror(errno));
+			return 2;
+		} 
+		free(buffer);
+		lua_pushlstring(L, buffer, length);
+		return 1;
+	}
+
+	static int f_pipe_write(lua_State* L) {
+		pipe_t* pip = luaL_checkudata(L, 1, "wtk.c.pipe");
+		size_t size;
+		const char* buffer = luaL_checklstring(L, 2, &size);
+		int length = write(pip->fd[1], buffer, size);
+		if (length == 0)
+			return 0;
+		if (length == -1) {
+			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+				lua_pushinteger(L, 0);
+				return 1;
+			}
+			lua_pushnil(L);
+			lua_pushstring(L, strerror(errno));
+			return 2;
+		}
+		lua_pushinteger(L, length);
+		return 1;
+	}
+
+	static int f_pipe_gc(lua_State* L) {
+		pipe_t* pip = luaL_checkudata(L, 1, "wtk.c.pipe");
+		if (pip->fd[0])
+			close(pip->fd[0]);
+		if (pip->fd[1])
+			close(pip->fd[1]);
+		return 0;
+	}
+
+	static const luaL_Reg pipe_lib[] = {
+		{ "new",      f_pipe_new   },
+		{ "read",		 f_pipe_read },
+		{ "write", 	 f_pipe_write },
+		{ "__gc",		 f_pipe_gc },
 		{ NULL,       NULL }
 	};
 
@@ -310,6 +377,7 @@ int luaopen_wtk_c(lua_State* L) {
   luaW_newclass(L, system);
   #ifndef _WIN32
 		luaW_newclass(L, countdown);
+		luaW_newclass(L, pipe);
 		luaW_newclass(L, loop);
 	#endif
   if (luaW_loadblock(L, __FILE__, __LINE__, "local wtk = ...\n\
@@ -320,7 +388,7 @@ int luaopen_wtk_c(lua_State* L) {
 			if coroutine.status(job.co) ~= 'dead' then\n\
 				if type(result) == 'number' then result = { time = wtk.countdown.new(result) } end\n\
 				local waiting_obj, waiting_type = type(result) == 'table' and (result.socket or result.fd or result.time), type(result) == 'table' and result.type or 'read'\n\
-				if (not waiting_obj or not job.waiting) or (job.waiting.obj ~= waiting_obj or job.waiting_type) then\n\
+				if (not waiting_obj or not job.waiting) or (job.waiting.obj ~= waiting_obj) or (job.waiting_type ~= waiting_type) then\n\
 					if job.waiting then self:rm(job.waiting.obj) end\n\
 					job.waiting = nil\n\
 				end\n\
@@ -338,6 +406,15 @@ int luaopen_wtk_c(lua_State* L) {
 		return job\n\
 	end\n\
 	function wtk.Loop:job(func) return self:job_step(wtk.Promise.new({ co = coroutine.create(function(job) try(function() job:resolve(func(job)) end, function(err) job:reject(err) end) end) })) end\n\
+	function wtk.Loop:await(t)\n\
+		if type(t) ~= 'table' or #t == 0 then t = { t } end\n\
+		local signal = wtk.pipe.new()\n\
+		local status, result\n\
+		local prom = wtk.Promise.all(t):done(function(t) status, result = true, t end):fail(function(t) status, result = false, t end):always(function() signal:write('1') end)\n\
+		if status == nil then coroutine.yield({ fd = signal }) end\n\
+		if not status then error(result) end\n\
+		return result\n\
+	end\n\
   wtk.Promise = {}\n\
   setmetatable({}, wtk.Promise)\n\
   wtk.Promise.__index = wtk.Promise\n\
@@ -348,6 +425,20 @@ int luaopen_wtk_c(lua_State* L) {
   function wtk.Promise:always(func) return self:on(func, func) end\n\
   function wtk.Promise:resolve(...) self.resolved = { ... } for k,v in ipairs(self.doneh) do v(table.unpack(self.resolved)) end return self end\n\
   function wtk.Promise:reject(...) self.rejected = { ... } for k,v in ipairs(self.failh) do v(table.unpack(self.rejected)) end return self end\n\
+  function wtk.Promise.all(promises, func)\n\
+		local res, fail, total = {}, false, 0\n\
+		local prom = wtk.Promise.new()\n\
+		for i, promise in ipairs(promises) do\n\
+			promise:done(function(r) \n\
+				total = total + 1\n\
+				res[i] = r \n\
+				if total == #promises then \n\
+					prom:resolve(res) \n\
+				end\n\
+			end):fail(function(r) prom:reject(r) end)\n\
+		end\n\
+		return prom\n\
+  end\n\
   wtk.error = {\n\
 		__tostring = function(self) return tostring(self.error or self.stack) end,\n\
 		new = function(err, level)\n\
