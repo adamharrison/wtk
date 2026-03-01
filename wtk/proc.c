@@ -12,86 +12,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
-static int f_stream_new(lua_State* L, int fd, const char* type) {
-    lua_newtable(L);
-    lua_pushinteger(L, fd);
-    lua_setfield(L, -2, "fd");
-    lua_pushstring(L, type);
-    lua_setfield(L, -2, "type");
-    luaL_setmetatable(L, "wtk.proc.c.stream");
-    return 1;
-}
-
-static int f_stream_write(lua_State* L) {
-    luaL_checktype(L, 1, LUA_TTABLE);
-    size_t len;
-    lua_getfield(L, 1, "fd");
-    int fd = luaL_checkinteger(L, -1);
-    const char* chunk = luaL_checklstring(L, 2, &len);
-    int blocking = lua_toboolean(L, 3);
-    if (blocking)
-        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) & ~O_NONBLOCK);
-    int written = write(fd, chunk, len);
-    if (written == 0)
-        return 0;
-    if (written == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
-        written = 0;
-    if (blocking)
-        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
-    if (written < 0) 
-        return luaL_error(L, "error writing to stream: %s", strerror(errno));
-    lua_pushinteger(L, written);
-    return 1;
-}
-
-static int f_stream_read(lua_State* L) {
-    luaL_checktype(L, 1, LUA_TTABLE);
-    int bytes = luaL_checkinteger(L, 2);
-    int blocking = lua_toboolean(L, 3);
-    lua_getfield(L, 1, "fd");
-    int fd = luaL_checkinteger(L, -1);
-    lua_pop(L, 1);
-    char buffer[16*1024]={0};
-    luaL_Buffer b;
-    luaL_buffinit(L, &b);
-    int total_read = 0;
-    if (blocking)
-        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) & ~O_NONBLOCK);
-    while (total_read < bytes) {
-        int to_read = sizeof(buffer) < (bytes - total_read) ? sizeof(buffer) : (bytes - total_read);
-        int result = to_read > 0 ? read(fd, buffer, to_read) : 0;
-        if (result == 0 && total_read == 0)
-            return 0;
-        if (result == -1 && (errno == EWOULDBLOCK || errno == EAGAIN))
-            result = 0;
-        if (result < 0) {
-            if (blocking)
-                fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
-            return luaL_error(L, "error reading from stream: %s", strerror(errno));
-        } else if (result > 0) {
-            luaL_addlstring(&b, buffer, result);
-            total_read += result;
-        } else
-            break;
-    }
-    if (blocking)
-        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
-    luaL_pushresult(&b);
-    return 1;
-}
-
-static int f_stream_close(lua_State* L) {
-    luaL_checktype(L, 1, LUA_TTABLE);
-    lua_getfield(L, 1, "fd");
-    close(luaL_checkinteger(L, -1));
-    lua_pushnil(L);
-    lua_setfield(L, 1, "fd");
-    return 0;
-}
-
-static int f_stream_gc(lua_State* L) {
-    return f_stream_close(L);
-}
+int f_stream_new(lua_State* L, int readfd, int writefd);
 
 
 // Argument 1 is a table, or a string.
@@ -139,15 +60,15 @@ static int f_proc_new(lua_State* L) {
     lua_newtable(L);
     lua_pushinteger(L, pid);
     lua_setfield(L, -2, "pid");
-    f_stream_new(L, stdout_pipe[0], "read");
+    f_stream_new(L, stdout_pipe[0], -1);
     lua_pushvalue(L, -2);
     lua_setfield(L, -2, "proc");
     lua_setfield(L, -2, "stdout");
-    f_stream_new(L, stderr_pipe[0], "read");
+    f_stream_new(L, stderr_pipe[0], -1);
     lua_pushvalue(L, -2);
     lua_setfield(L, -2, "proc");
     lua_setfield(L, -2, "stderr");
-    f_stream_new(L, stdin_pipe[1], "write");
+    f_stream_new(L, -1, stdin_pipe[1]);
     lua_pushvalue(L, -2);
     lua_setfield(L, -2, "proc");
     lua_setfield(L, -2, "stdin");
@@ -184,13 +105,6 @@ static int f_proc_status(lua_State* L) {
     return 1;
 }
 
-static const luaL_Reg f_stream_api[] = {
-    { "__gc",      f_stream_gc    },
-    { "__read",    f_stream_read  },
-    { "__write",   f_stream_write },
-    { "close",     f_stream_close },
-    { NULL,        NULL            }
-};
 
 static const luaL_Reg f_proc_api[] = {
     { "__gc",      f_proc_gc       },
@@ -210,13 +124,10 @@ int luaopen_wtk_proc_c(lua_State* L) {
         luaW_defsignal(ILL), luaW_defsignal(PIPE), luaW_defsignal(QUIT), luaW_defsignal(SEGV), luaW_defsignal(STOP),
         luaW_defsignal(TSTP), luaW_defsignal(TTIN), luaW_defsignal(TTOU), luaW_defsignal(SYS), luaW_defsignal(TRAP);
     lua_setfield(L, -2, "signals");
-    luaL_newmetatable(L, "wtk.proc.c.stream");
-    luaL_setfuncs(L, f_stream_api, 0);
     if (luaW_loadblock(L, __FILE__, __LINE__, "\n\
     local proc, stream = ...\n\
     proc.__index = proc\n\
     proc.__stream = stream\n\
-    stream.__index = stream\n\
     local _kill = proc.kill\n\
     function proc:kill(sig) return _kill(self, type(sig) == 'string' and self.signals[sig] or sig) end\n\
     function proc:join()\n\
@@ -230,67 +141,9 @@ int luaopen_wtk_proc_c(lua_State* L) {
         return proc.__new(type(prog) == 'string' and { os.getenv('SHELL') or 'sh', '-c', prog } or prog, options)\n\
     end\n\
     setmetatable(proc, { __call = proc.new })\n\
-    function stream:write(chunk)\n\
-        local yieldable = coroutine.isyieldable()\n\
-        while #chunk > 0 do\n\
-            local total_written = self:__write(chunk, not yieldable)\n\
-            if total_written > 0 then\n\
-                chunk = chunk:sub(total_written + 1)\n\
-            elseif yieldable then\n\
-                self:yield()\n\
-            end\n\
-        end\n\
-    end\n\
-    function stream:yield() coroutine.yield({ fd = self.fd, type = self.type }) end\n\
-    function stream:read(target)\n\
-        if not self.buffer then self.buffer = '' end\n\
-        local yieldable = coroutine.isyieldable()\n\
-        if type(target) == 'number' then \n\
-            if target > #self.buffer then self.buffer = self.buffer .. (self:__read(target - #self.buffer) or '') end\n\
-            local bytes = self.buffer\n\
-            self.buffer = bytes:sub(target + 1)\n\
-            return bytes:sub(1, target)\n\
-        else\n\
-            assert(type(target) == 'string', 'unknown read target')\n\
-            if target:find('^%*?[aA]') then \n\
-                target = 'a'\n\
-            elseif target:find('^%*?[lL]') then\n\
-                target = 'l'\n\
-            else\n\
-                error('unknown read target', 1)\n\
-            end\n\
-            local chunks = { }\n\
-            while true do\n\
-                local chunk\n\
-                if #chunks == 0 and self.buffer and #self.buffer > 0 then\n\
-                    chunk = self.buffer\n\
-                else\n\
-                    chunk = self:__read(16*1024, not yieldable)\n\
-                end\n\
-                if not chunk then break end\n\
-                if #chunk > 0 then\n\
-                    local s,e\n\
-                    if target == 'l' then\n\
-                        s,e = chunk:find('[\\r\\n]+')\n\
-                    end\n\
-                    if s then\n\
-                        table.insert(chunks, chunk:sub(1, s - 1))\n\
-                        self.buffer = chunk:sub(e + 1)\n\
-                        break\n\
-                    else\n\
-                        table.insert(chunks, chunk)\n\
-                    end\n\
-                elseif coroutine.isyieldable() then\n\
-                    coroutine.yield({ fd = self.fd })\n\
-                end\n\
-            end\n\
-            return table.concat(chunks)\n\
-        end\n\
-    end\n\
     return proc"))
         return lua_error(L);
-    lua_pushvalue(L, -3);
-    lua_pushvalue(L, -3);
-    lua_call(L, 2, 1);
+    lua_pushvalue(L, -2);
+    lua_call(L, 1, 1);
     return 1;
 }

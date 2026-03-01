@@ -19,10 +19,133 @@
 #include <sys/time.h>
 
 typedef struct { int fd; } generic_fd_t;
-typedef struct { int fd; double recurring; } countdown_t;
-typedef struct { int fd[2]; } pipe_t;
 
 #define DIRSEP '/'
+
+int f_stream_new(lua_State* L, int readfd, int writefd) {
+    lua_newtable(L);
+    if (readfd > 0) {
+			lua_pushinteger(L, readfd);
+			lua_rawseti(L, -2, 0);
+		}
+	  if (writefd > 0) {
+			lua_pushinteger(L, writefd);
+			lua_rawseti(L, -2, 1);
+		}
+    luaL_setmetatable(L, "wtk.c.stream");
+    return 1;
+}
+
+static int f_stream_write(lua_State* L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    size_t len;
+    lua_rawgeti(L, 1, 1);
+    if (lua_isnil(L, -1)) {
+			lua_pushnil(L);
+			lua_pushstring(L, "stream not open for writing");
+			return 2;
+    }
+    int fd = luaL_checkinteger(L, -1);
+    const char* chunk = luaL_checklstring(L, 2, &len);
+    int blocking = lua_toboolean(L, 3);
+    if (blocking)
+        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) & ~O_NONBLOCK);
+    int written = write(fd, chunk, len);
+    if (written == 0)
+        return 0;
+    if (written == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
+        written = 0;
+    if (blocking)
+        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+    if (written < 0) 
+        return luaL_error(L, "error writing to stream: %s", strerror(errno));
+    lua_pushinteger(L, written);
+    return 1;
+}
+
+static int f_stream_read(lua_State* L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    int bytes = luaL_checkinteger(L, 2);
+    int blocking = lua_toboolean(L, 3);
+    lua_rawgeti(L, 1, 0);
+    if (lua_isnil(L, -1)) {
+			lua_pushnil(L);
+			lua_pushstring(L, "stream not open for reading");
+			return 2;
+    }
+    int fd = luaL_checkinteger(L, -1);
+    lua_pop(L, 1);
+    char buffer[16*1024]={0};
+    luaL_Buffer b;
+    luaL_buffinit(L, &b);
+    int total_read = 0;
+    if (blocking)
+        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) & ~O_NONBLOCK);
+    while (total_read < bytes) {
+        int to_read = sizeof(buffer) < (bytes - total_read) ? sizeof(buffer) : (bytes - total_read);
+        int result = to_read > 0 ? read(fd, buffer, to_read) : 0;
+        if (result == 0 && total_read == 0)
+            return 0;
+        if (result == -1 && (errno == EWOULDBLOCK || errno == EAGAIN))
+            result = 0;
+        if (result < 0) {
+            if (blocking)
+                fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+            return luaL_error(L, "error reading from stream: %s", strerror(errno));
+        } else if (result > 0) {
+            luaL_addlstring(&b, buffer, result);
+            total_read += result;
+        } else
+            break;
+    }
+    if (blocking)
+        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+    luaL_pushresult(&b);
+    return 1;
+}
+
+static int f_stream_seek(lua_State* L) {
+	lua_rawgeti(L, 1, 0);
+	int fd = lua_tointeger(L, -1);
+	lua_pop(L, 1);
+	if (fd == -1) {
+		lua_rawgeti(L, 1, 1);
+		fd = lua_tointeger(L, -1);
+		lua_pop(L, 1);
+	}
+	const char* whence = luaL_checkstring(L, 2);
+	int res = lseek(fd, luaL_checkinteger(L, 3), strcmp(whence, "cur") == 0 ? SEEK_CUR : (strcmp(whence, "end") == 0 ? SEEK_END : SEEK_SET));
+	if (res == -1) {
+		lua_pushnil(L);
+		lua_pushstring(L, strerror(errno));
+		return 2;
+	}
+	lua_pushinteger(L, res);
+	return 1;
+}
+
+static int f_stream_close(lua_State* L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    for (int i = 0; i < 2; ++i) {
+			lua_rawgeti(L, 1, 0);
+			if (!lua_isnil(L, -1))
+				close(luaL_checkinteger(L, -1));
+			lua_pop(L, 1);
+			lua_pushnil(L);
+			lua_rawseti(L, 1, i);
+		}
+    return 0;
+}
+
+static const luaL_Reg stream_lib[] = {
+    { "__gc",      f_stream_close },
+    { "__read",    f_stream_read  },
+    { "__write",   f_stream_write },
+    { "seek",      f_stream_seek  },
+    { "close",     f_stream_close },
+    { NULL,        NULL           }
+};
+
 
 #ifndef _WIN32
 
@@ -125,28 +248,21 @@ typedef struct { int fd[2]; } pipe_t;
 		luaL_getsubtable(L, 1, "fds");
 		while (1) {
 			luaL_getsubtable(L, 1, "deferred");
+			lua_newtable(L);
+			lua_setfield(L, 1, "deferred");
 			size_t len = lua_rawlen(L, -1);
 			if (len) {
 				for (int i = 1; i <= len; ++i) {
 					lua_rawgeti(L, -1, i);
 					lua_call(L, 0, 0);
 				}
-				lua_newtable(L);
-				lua_setfield(L, 1, "deferred");
 			}
 			lua_pop(L, 1);
-			int nfds = epoll_wait(epollfd, events, 100, -1);
+			int nfds = epoll_wait(epollfd, events, 100, len > 0 ? 0 : -1);
 			for (int n = 0; n < nfds; ++n) {
 				lua_pushinteger(L, events[n].data.fd);
 				lua_rawget(L, -2);
 				if (!lua_isnil(L, -1)) { // in the case where we've removed the callback, and there are lingering events.
-					lua_rawgeti(L, -1, 2);
-					countdown_t* countdown = luaL_testudata(L, -1, "wtk.c.countdown");
-					if (countdown) {
-						long long length;
-						length = read(countdown->fd, &length, sizeof(length));
-					}
-					lua_pop(L, 1);
 					lua_rawgeti(L, -1, 1);
 					if (lua_pcall(L, 0, 1, 0))
 						return luaL_error(L, "error running callback: %s", lua_tostring(L, -1));
@@ -176,105 +292,55 @@ typedef struct { int fd[2]; } pipe_t;
 	static int f_countdown_new(lua_State* L) {
 		double offset = luaL_checknumber(L, 1);
 		double recurring = luaL_optnumber(L, 2, 0);
-		countdown_t* countdown = lua_newuserdata(L, sizeof(countdown_t));
-		luaL_setmetatable(L, "wtk.c.countdown");
-		countdown->fd = timerfd_create(CLOCK_MONOTONIC, 0);
-		countdown->recurring = recurring;
+		int fd = timerfd_create(CLOCK_MONOTONIC, 0);
 		struct itimerspec new_value = {0};
 		new_value.it_value.tv_sec = (int)offset;
 		new_value.it_value.tv_nsec = (int)(fmod(offset, 1.0) * (1000000000.0));
-		new_value.it_interval.tv_sec = (int)countdown->recurring;
-		new_value.it_interval.tv_nsec = (int)(fmod(countdown->recurring, 1.0) * (1000000000.0));
-		if (timerfd_settime(countdown->fd, 0, &new_value, NULL) == -1)
-			return luaL_error(L, "can't set timer: %s", strerror(errno));
-		return 1;
+		new_value.it_interval.tv_sec = (int)recurring;
+		new_value.it_interval.tv_nsec = (int)(fmod(recurring, 1.0) * (1000000000.0));
+		if (timerfd_settime(fd, 0, &new_value, NULL) == -1) {
+			lua_pushnil(L);
+			lua_pushfstring(L, "can't set timer: %s", strerror(errno));
+			return 2;
+		}
+		return f_stream_new(L, fd, -1);
 	}
 
-	static int f_countdown_gc(lua_State* L) {
-		countdown_t* countdown = luaL_checkudata(L, 1, "wtk.c.countdown");
-		if (countdown->fd)
-			close(countdown->fd);
-		return 0;
-	}
-
-	static const luaL_Reg countdown_lib[] = {
-		{ "new",      f_countdown_new   },
-		{ "__gc",		 f_countdown_gc },
-		{ NULL,       NULL }
-	};
-
-	
 	static int f_pipe_new(lua_State* L) {
-		pipe_t* pip = lua_newuserdata(L, sizeof(pipe_t));
-		luaL_setmetatable(L, "wtk.c.pipe");
-		if (pipe(pip->fd) == -1)
-			return luaL_error(L, "can't create pipe: %s", strerror(errno));
-		for (int i = 0; i < 2; ++i) {
-			int flags = fcntl(pip->fd[i], F_GETFL, 0);
-			if (flags == -1 || fcntl(pip->fd[i], F_SETFL, (flags | O_NONBLOCK)) == -1) 
-				return luaL_error(L, "error setting non-blocking: %s", strerror(errno));
-		}
-		return 1;
-	}
-
-	static int f_pipe_read(lua_State* L) {
-		pipe_t* pip = luaL_checkudata(L, 1, "wtk.c.pipe");
-		size_t size = luaL_checkinteger(L, 2);
-		char* buffer = malloc(size + 1);
-		int length = read(pip->fd[0], buffer, size);
-		if (length == 0)
-			return 0;
-		if (length == -1) {
-			if (errno == EAGAIN || errno == EWOULDBLOCK) {
-				lua_pushliteral(L, "");
-				return 1;
-			}
+		int fds[2];
+		if (pipe(fds) == -1) {
 			lua_pushnil(L);
-			lua_pushstring(L, strerror(errno));
-			return 2;
-		} 
-		free(buffer);
-		lua_pushlstring(L, buffer, length);
-		return 1;
-	}
-
-	static int f_pipe_write(lua_State* L) {
-		pipe_t* pip = luaL_checkudata(L, 1, "wtk.c.pipe");
-		size_t size;
-		const char* buffer = luaL_checklstring(L, 2, &size);
-		int length = write(pip->fd[1], buffer, size);
-		if (length == 0)
-			return 0;
-		if (length == -1) {
-			if (errno == EAGAIN || errno == EWOULDBLOCK) {
-				lua_pushinteger(L, 0);
-				return 1;
-			}
-			lua_pushnil(L);
-			lua_pushstring(L, strerror(errno));
+			lua_pushfstring(L, "unable to create pipe: %s", strerror(errno));
 			return 2;
 		}
-		lua_pushinteger(L, length);
-		return 1;
+		fcntl(fds[0], F_SETFL, fcntl(fds[0], F_GETFL, 0) | O_NONBLOCK);
+		fcntl(fds[1], F_SETFL, fcntl(fds[0], F_GETFL, 0) | O_NONBLOCK);
+		return f_stream_new(L, fds[0], fds[1]);
 	}
+	
 
-	static int f_pipe_gc(lua_State* L) {
-		pipe_t* pip = luaL_checkudata(L, 1, "wtk.c.pipe");
-		if (pip->fd[0])
-			close(pip->fd[0]);
-		if (pip->fd[1])
-			close(pip->fd[1]);
-		return 0;
+	static int f_file_new(lua_State* L) {
+		const char* flags = luaL_optstring(L, 2, "rb");
+		int flagInt = 0;
+		if (strchr(flags, 'r') && (strchr(flags, 'w') || strchr(flags, 'a')))
+			flagInt = O_RDWR;
+		else if (strchr(flags, 'r'))
+			flagInt = O_RDONLY;
+		else if (strchr(flags, 'w'))
+			flagInt = O_WRONLY;
+		if (strchr(flags, 'w'))
+			flagInt |= O_TRUNC | O_CREAT;
+		if (strchr(flags, 'a'))
+			flagInt |= O_APPEND;
+		int fd = open(luaL_checkstring(L, 1), flagInt | O_NONBLOCK, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+		if (fd == -1) {
+			lua_pushnil(L);
+			lua_pushfstring(L, "unable to open file %s: %s", luaL_checkstring(L, 1), strerror(errno));
+			return 2;
+		}
+		return f_stream_new(L, strchr(flags, 'r') ? fd : -1, (strchr(flags, 'r') || strchr(flags, 'w')) ? fd : -1);
 	}
-
-	static const luaL_Reg pipe_lib[] = {
-		{ "new",      f_pipe_new   },
-		{ "read",		 f_pipe_read },
-		{ "write", 	 f_pipe_write },
-		{ "__gc",		 f_pipe_gc },
-		{ NULL,       NULL }
-	};
-
+	
 #endif
 
 static int f_system_ls(lua_State* L) {
@@ -347,14 +413,20 @@ static int f_system_isatty(lua_State* L){
 	return 1;
 }
 
+static const luaL_Reg io_lib[] = {
+	{ "pipe",      f_pipe_new       },
+	{ "file",      f_file_new       },
+	{ "countdown", f_countdown_new  },
+};
+
 static const luaL_Reg system_lib[] = {
-	{ "ls",       f_system_ls      },
-	{ "mkdir",    f_system_mkdir   },
-	{ "rmdir",    f_system_rmdir   },
-  { "stat",     f_system_stat    },
-  { "time",     f_system_time    },
-  { "isatty",	 f_system_isatty  },
-  { NULL,       NULL }
+	{ "ls",        f_system_ls      },
+	{ "mkdir",     f_system_mkdir   },
+	{ "rmdir",     f_system_rmdir   },
+  { "stat",      f_system_stat    },
+  { "time",      f_system_time    },
+  { "isatty",	  f_system_isatty  },
+  { NULL,        NULL }
 };
 
 int luaW_loadblock(lua_State* L, const char* name, int line, const char* str) {
@@ -370,23 +442,31 @@ int luaW_loadblock(lua_State* L, const char* name, int line, const char* str) {
 	return res;
 }
 
+
 #define luaW_newclass(L, name) lua_pushliteral(L, #name), luaL_newmetatable(L, "wtk.c." #name), luaL_setfuncs(L, name##_lib, 0), lua_pushvalue(L, -1), lua_setfield(L, -2, "__index"), lua_rawset(L, -3)
 
 int luaopen_wtk_c(lua_State* L) {
 	lua_newtable(L);
   luaW_newclass(L, system);
   #ifndef _WIN32
-		luaW_newclass(L, countdown);
-		luaW_newclass(L, pipe);
+		luaW_newclass(L, stream);
 		luaW_newclass(L, loop);
 	#endif
+  luaW_newclass(L, io);
+  lua_getfield(L, -1, "io");
+  f_stream_new(L, 0, -1), lua_setfield(L, -2, "stdin");
+  f_stream_new(L, -1, 1), lua_setfield(L, -2, "stdout");
+  f_stream_new(L, -1, 2), lua_setfield(L, -2, "stderr");
+  lua_pop(L, 1);
   if (luaW_loadblock(L, __FILE__, __LINE__, "local wtk = ...\n\
   wtk.Loop = wtk.loop\n\
+  wtk.Stream = wtk.stream\n\
+  wtk.Stream.__index = wtk.Stream\n\
 	function wtk.Loop:job_step(job)\n\
 		if coroutine.status(job.co) ~= 'dead' then\n\
 			local status, result = assert(coroutine.resume(job.co, job))\n\
 			if coroutine.status(job.co) ~= 'dead' then\n\
-				if type(result) == 'number' then result = { time = wtk.countdown.new(result) } end\n\
+				if type(result) == 'number' then result = { time = wtk.io.countdown(result) } end\n\
 				local waiting_obj, waiting_type = type(result) == 'table' and (result.socket or result.fd or result.time), type(result) == 'table' and result.type or 'read'\n\
 				if (not waiting_obj or not job.waiting) or (job.waiting.obj ~= waiting_obj) or (job.waiting_type ~= waiting_type) then\n\
 					if job.waiting then self:rm(job.waiting.obj) end\n\
@@ -405,10 +485,83 @@ int luaopen_wtk_c(lua_State* L) {
 		end\n\
 		return job\n\
 	end\n\
+	function wtk.Stream:write(chunk)\n\
+			local yieldable = coroutine.isyieldable()\n\
+			while #chunk > 0 do\n\
+					local total_written = self:__write(chunk, not yieldable)\n\
+					if total_written > 0 then\n\
+							chunk = chunk:sub(total_written + 1)\n\
+					elseif yieldable then\n\
+							self:yield()\n\
+					end\n\
+			end\n\
+			return self\n\
+	end\n\
+	function wtk.Stream:flush() return self end\n\
+	function wtk.Stream:yield() coroutine.yield({ fd = self[0] or self[1], type = self[0] and self[1] and 'both' or (self[0] and 'read' or 'write') }) end\n\
+	function wtk.Stream:read(target, nonblocking)\n\
+			if not self.buffer then self.buffer = '' end\n\
+			local yieldable = coroutine.isyieldable()\n\
+			if type(target) == 'number' then \n\
+					if target > #self.buffer then \n\
+						while true do\n\
+							local chunk = self:__read(target - #self.buffer, not yieldable)\n\
+							if not chunk then break end\n\
+							if #chunk > 0 then\n\
+								self.buffer = self.buffer .. chunk\n\
+								break\n\
+							elseif nonblocking then\n\
+								break\n\
+							elseif yieldable then\n\
+								coroutine.yield({ fd = self[0] })\n\
+							end\n\
+						end\n\
+					end\n\
+					local bytes = self.buffer\n\
+					self.buffer = bytes:sub(target + 1)\n\
+					return bytes:sub(1, target)\n\
+			else\n\
+					assert(type(target) == 'string', 'unknown read target')\n\
+					if target:find('^%*?[aA]') then \n\
+							target = 'a'\n\
+					elseif target:find('^%*?[lL]') then\n\
+							target = 'l'\n\
+					else\n\
+							error('unknown read target', 1)\n\
+					end\n\
+					local chunks = { }\n\
+					while true do\n\
+							local chunk\n\
+							if #chunks == 0 and self.buffer and #self.buffer > 0 then\n\
+									chunk = self.buffer\n\
+							else\n\
+									chunk = self:__read(16*1024, not yieldable)\n\
+							end\n\
+							if not chunk then break end\n\
+							if #chunk > 0 then\n\
+									local s,e\n\
+									if target == 'l' then\n\
+											s,e = chunk:find('[\\r\\n]')\n\
+											if chunk:byte(s) == 13 and chunk:byte(s+1) == 10 then e = e + 1 end\n\
+									end\n\
+									if s then\n\
+											table.insert(chunks, chunk:sub(1, s - 1))\n\
+											self.buffer = chunk:sub(e + 1)\n\
+											break\n\
+									else\n\
+											table.insert(chunks, chunk)\n\
+									end\n\
+							elseif yieldable then\n\
+								coroutine.yield({ fd = self[0] })\n\
+							end\n\
+					end\n\
+					return table.concat(chunks)\n\
+			end\n\
+	end\n\
 	function wtk.Loop:job(func) return self:job_step(wtk.Promise.new({ co = coroutine.create(function(job) try(function() job:resolve(func(job)) end, function(err) job:reject(err) end) end) })) end\n\
 	function wtk.Loop:await(t)\n\
 		if type(t) ~= 'table' or #t == 0 then t = { t } end\n\
-		local signal = wtk.pipe.new()\n\
+		local signal = wtk.pipe()\n\
 		local status, result\n\
 		local prom = wtk.Promise.all(t):done(function(t) status, result = true, t end):fail(function(t) status, result = false, t end):always(function() signal:write('1') end)\n\
 		if status == nil then coroutine.yield({ fd = signal }) end\n\
