@@ -324,38 +324,6 @@ function Client:read(len)
 end
 function Client:close() self.server.log:verbose("Manually closing connnection.") self.socket:close() self.closed = true end
 function Client:yield(type) coroutine.yield({ socket = self.socket, type = type or "read" }) end
-function Client:process()
-  while coroutine.status(self.co) ~= "dead" do
-    local status, result = coroutine.resume(self.co)
-    if coroutine.status(self.co) ~= "dead" then
-      if result then
-        if type(result) == 'number' then result = { timeout = result } end
-        if self.waiting and self.waiting ~= result.socket or (self.waiting_type ~= result.waiting_type) then   
-          self.server.loop:rm(self.waiting) 
-          self.waiting = nil 
-          self.waiting_type = nil
-        end
-        if not self.waiting and (result.socket or result.fd or result.timeout) then
-          self.waiting_type = result.type or "read"
-          self.waiting = self.server.loop:add(result.socket or result.fd or wtk.countdown.new(result.timeout), function() 
-            self:process() 
-          end, self.waiting_type, result.edge)
-        end
-        break
-      else
-        if self.waiting then
-          self.server.loop:rm(self.waiting)
-          self.waiting = nil
-          self.waiting_type = nil
-        end
-        self.server.loop:add(function() self:process() end)
-      end
-    end
-  end
-  if coroutine.status(self.co) == "dead" and self.waiting then
-    self.server.loop:rm(self.waiting)
-  end
-end
 
 function Server.new(t) 
   t.socket = assert(socket.bind(t.host or "0.0.0.0", t.port or (t.debug and 8080 or 80)), "unable to bind")
@@ -394,7 +362,7 @@ function Server:accept()
   if socket then 
     local client = Client.new(self, socket)
     self.log:verbose("Incoming connection from '%s'", select(2, socket:peer()))
-    client.co = coroutine.create(function() 
+    client.job = self.loop:job(function()
       while not client.closed do
         local request
         try(function()
@@ -421,7 +389,7 @@ function Server:accept()
 end
 function Server:add(loop)
   loop:add(self.socket, function() 
-    self:accept():process() 
+    self:accept()
   end, "read")
   self.loop = loop
   return self

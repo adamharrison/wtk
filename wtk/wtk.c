@@ -267,8 +267,10 @@ static const luaL_Reg stream_lib[] = {
 					if (lua_pcall(L, 0, 1, 0))
 						return luaL_error(L, "error running callback: %s", lua_tostring(L, -1));
 					lua_pop(L, 2);
-				} else 
+				} else {
+					// epoll_ctl(epollfd, EPOLL_CTL_DEL, events[n].data.fd, NULL);
 					lua_pop(L, 1);
+				}
 			}
 		}
 		return 1;
@@ -359,8 +361,10 @@ static int f_system_ls(lua_State* L) {
 		lua_newtable(L);
 		lua_pushstring(L, entry->d_name);
 		lua_setfield(L, -2, "name");
-		lua_pushstring(L, entry->d_type == DT_DIR ? "dir" : (entry->d_type == DT_REG ? "file" : "other"));
-		lua_setfield(L, -2, "type");
+		if (entry->d_type != DT_UNKNOWN) {
+			lua_pushstring(L, entry->d_type == DT_DIR ? "dir" : (entry->d_type == DT_REG ? "file" : "other"));
+			lua_setfield(L, -2, "type");
+		}
 		lua_rawseti(L, -2, i++);
 	}
 	closedir(dir);
@@ -398,14 +402,14 @@ static int f_system_stat(lua_State* L) {
 	lua_pushnumber(L, file.st_mtime), lua_setfield(L, -2, "mtime");
 	lua_pushinteger(L, file.st_size), lua_setfield(L, -2, "size");
 	lua_pushstring(L, S_ISREG(file.st_mode) ? "file" : (S_ISDIR(file.st_mode) ? "dir" : "other")), lua_setfield(L, -2, "type");
-  return 1;
+	return 1;
 }
 
 static int f_system_time(lua_State* L) {
 	struct timeval tv;
 	gettimeofday(&tv, NULL);
 	lua_pushnumber(L, (double)tv.tv_sec + tv.tv_usec / 1000000.0);
-  return 1;
+	return 1;
 }
 
 static int f_system_isatty(lua_State* L){
@@ -423,10 +427,10 @@ static const luaL_Reg system_lib[] = {
 	{ "ls",        f_system_ls      },
 	{ "mkdir",     f_system_mkdir   },
 	{ "rmdir",     f_system_rmdir   },
-  { "stat",      f_system_stat    },
-  { "time",      f_system_time    },
-  { "isatty",	  f_system_isatty  },
-  { NULL,        NULL }
+	{ "stat",      f_system_stat    },
+	{ "time",      f_system_time    },
+	{ "isatty",	f_system_isatty  },
+	{ NULL,        NULL }
 };
 
 int luaW_loadblock(lua_State* L, const char* name, int line, const char* str) {
@@ -466,13 +470,16 @@ int luaopen_wtk_c(lua_State* L) {
 		if coroutine.status(job.co) ~= 'dead' then\n\
 			local status, result = assert(coroutine.resume(job.co, job))\n\
 			if coroutine.status(job.co) ~= 'dead' then\n\
-				if type(result) == 'number' then result = { time = wtk.io.countdown(result) } end\n\
-				local waiting_obj, waiting_type = type(result) == 'table' and (result.socket or result.fd or result.time), type(result) == 'table' and result.type or 'read'\n\
+				if type(result) == 'number' then \n\
+					result = { time = wtk.io.countdown(result) } \n\
+					result.fd = result.time[0]\n\
+				end\n\
+				local waiting_obj, waiting_type = type(result) == 'table' and (result.socket or result.fd), type(result) == 'table' and result.type or 'read'\n\
 				if (not waiting_obj or not job.waiting) or (job.waiting.obj ~= waiting_obj) or (job.waiting_type ~= waiting_type) then\n\
 					if job.waiting then self:rm(job.waiting.obj) end\n\
 					job.waiting = nil\n\
 				end\n\
-				job.waiting = waiting_obj and { obj = waiting_obj, type = waiting_type, edge = result.edge }\n\
+				job.waiting = waiting_obj and { obj = waiting_obj, type = waiting_type, edge = result.edge, result = result }\n\
 				if job.waiting then \n\
 					self:add(job.waiting.obj, function() self:job_step(job) end, job.waiting.type, job.waiting.edge)\n\
 				else\n\
