@@ -467,8 +467,8 @@ function Server:console()
   if err then self.log:error(err) end
 end
 
-function Server.escapeURI(param) return param:gsub("[^A-Za-z0-9%-_%.%!~%*'%(%)]", function(e) return string.format("%%%02x", e:byte(1)) end) end
-function Server.unescapeURI(param) return param:gsub("%%([a-f0-9A-F][a-f0-9A-F])", function(e) return string.char(tonumber(e, 16)) end) end
+function Server.escapeURI(param) return tostring(param):gsub("[^A-Za-z0-9%-_%.%!~%*'%(%)]", function(e) return string.format("%%%02x", e:byte(1)) end) end
+function Server.unescapeURI(param) return tostring(param):gsub("%%([a-f0-9A-F][a-f0-9A-F])", function(e) return string.char(tonumber(e, 16)) end) end
 
 
 return Server

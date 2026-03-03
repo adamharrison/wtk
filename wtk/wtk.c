@@ -127,7 +127,7 @@ static int f_stream_seek(lua_State* L) {
 static int f_stream_close(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     for (int i = 0; i < 2; ++i) {
-			lua_rawgeti(L, 1, 0);
+			lua_rawgeti(L, 1, i);
 			if (!lua_isnil(L, -1))
 				close(luaL_checkinteger(L, -1));
 			lua_pop(L, 1);
@@ -513,7 +513,13 @@ int luaopen_wtk_c(lua_State* L) {
 					if target > #self.buffer then \n\
 						while true do\n\
 							local chunk = self:__read(target - #self.buffer, not yieldable)\n\
-							if not chunk then break end\n\
+              if not chunk then \n\
+                if #self.buffer > 0 then\n\
+                  break \n\
+                else\n\
+                  return nil\n\
+                end\n\
+              end\n\
 							if #chunk > 0 then\n\
 								self.buffer = self.buffer .. chunk\n\
 								break\n\
@@ -568,10 +574,10 @@ int luaopen_wtk_c(lua_State* L) {
 	function wtk.Loop:job(func) return self:job_step(wtk.Promise.new({ co = coroutine.create(function(job) try(function() job:resolve(func(job)) end, function(err) job:reject(err) end) end) })) end\n\
 	function wtk.Loop:await(t)\n\
 		if type(t) ~= 'table' or #t == 0 then t = { t } end\n\
-		local signal = wtk.pipe()\n\
+		local signal = wtk.io.pipe()\n\
 		local status, result\n\
 		local prom = wtk.Promise.all(t):done(function(t) status, result = true, t end):fail(function(t) status, result = false, t end):always(function() signal:write('1') end)\n\
-		if status == nil then coroutine.yield({ fd = signal }) end\n\
+		if status == nil then coroutine.yield({ fd = signal[0] }) end\n\
 		if not status then error(result) end\n\
 		return result\n\
 	end\n\
