@@ -221,7 +221,7 @@ function Request:file(path, headers)
   end
   return self:respond(self.headers['range'] and 206 or 200, headers, function() 
     if s >= e then return nil end
-    local chunk = f:read(math.min(16*1024, e - s)) 
+    local chunk = f:read(math.min(512*1024, e - s)) 
     if not chunk then return nil end
     s = s + #chunk
     return chunk

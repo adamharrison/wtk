@@ -90,7 +90,12 @@ static int f_proc_kill(lua_State* L) {
     int sig = luaL_optinteger(L, 2, SIGTERM);
     lua_getfield(L, 1, "pid");
     int pid = luaL_checkinteger(L, -1);
-    kill(pid, sig);
+    if (kill(pid, sig)) {
+        lua_pushnil(L);
+        lua_pushstring(L, strerror(errno));
+        return 2;
+    }
+    lua_pop(L, 1);
     return 1;
 }
 

@@ -391,6 +391,17 @@ static int f_system_rmdir(lua_State* L) {
 	return 1;
 }
 
+static int f_system_realpath(lua_State* L) {
+	char path[PATH_MAX];
+	if (realpath(luaL_checkstring(L, 1), path)) {
+		lua_pushnil(L);
+		lua_pushstring(L, strerror(errno));
+		return 2;
+	}
+	lua_pushstring(L, path);
+	return 1;
+}
+
 static int f_system_stat(lua_State* L) {
 	struct stat file;
 	if (stat(luaL_checkstring(L, 1), &file)) {
@@ -428,8 +439,9 @@ static const luaL_Reg system_lib[] = {
 	{ "mkdir",     f_system_mkdir   },
 	{ "rmdir",     f_system_rmdir   },
 	{ "stat",      f_system_stat    },
+	{ "realpath",  f_system_realpath},
 	{ "time",      f_system_time    },
-	{ "isatty",	f_system_isatty  },
+	{ "isatty",	  f_system_isatty  },
 	{ NULL,        NULL }
 };
 
