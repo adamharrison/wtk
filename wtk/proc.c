@@ -135,6 +135,12 @@ int luaopen_wtk_proc_c(lua_State* L) {
     proc.__stream = stream\n\
     local _kill = proc.kill\n\
     function proc:kill(sig) return _kill(self, type(sig) == 'string' and self.signals[sig] or sig) end\n\
+    function proc:term(timeout)\n\
+        if not self:status() then self:kill('TERM') end\n\
+        if not self:status() then coroutine.yield(timeout) end\n\
+        if not self:status() then self:kill('KILL') end\n\
+        return self:join()\n\
+    end\n\
     function proc:join()\n\
         while true do\n\
             local status = self:status(not coroutine.isyieldable())\n\
@@ -143,7 +149,16 @@ int luaopen_wtk_proc_c(lua_State* L) {
         end\n\
     end\n\
     function proc.new(prog, options)\n\
-        return proc.__new(type(prog) == 'string' and { os.getenv('SHELL') or 'sh', '-c', prog } or prog, options)\n\
+        local p = proc.__new(type(prog) == 'string' and { os.getenv('SHELL') or 'sh', '-c', prog } or prog, options)\n\
+        if options and options.stdin == false then p.stdin:close() end
+        if options and options.stdin ~= nil then p.stdin:print(options.stdin) p.stdin:close() end
+        if options and options.stderr == false then p.stderr:close() end
+        if options and options.stdout == false then p.stdout:close() end
+    end\n\
+    function proc.run(prog, options)\n\
+        local p = proc.new(prog, options)\n\
+        if p:join() ~= 0 then error(p.stderr:read('*all')) end\n\
+        return p.stdout:read('*all')\n\
     end\n\
     setmetatable(proc, { __call = proc.new })\n\
     return proc"))
