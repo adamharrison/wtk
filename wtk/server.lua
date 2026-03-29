@@ -88,6 +88,7 @@ function Server.Response:write_encoded(client, chunk)
   else
     client:write_block(chunk)
   end
+  return chunk and #chunk
 end
 
 function Server.Response:write(client)
@@ -276,7 +277,7 @@ end
 
 local Client = {}
 Client.__index = Client
-function Client.new(server, socket) return setmetatable({ last_activity = os.time(), server = server, waiting = nil, socket = socket, responsed = false, peer = select(2, socket:peer()) }, Client) end
+function Client.new(server, socket) return setmetatable({ last_activity = os.time(), server = server, waiting = nil, socket = socket, responsed = false, peer = select(4, socket:peer()) }, Client) end
 function Client:write(buf) 
   self.last_activity = os.time() 
   return self.socket:send(buf) 
@@ -361,7 +362,7 @@ function Server:accept()
   local socket = self.socket:accept()
   if socket then 
     local client = Client.new(self, socket)
-    self.log:verbose("Incoming connection from '%s'", select(2, socket:peer()))
+    self.log:verbose("Incoming connection from '%s'", select(4, socket:peer()))
     client.job = self.loop:job(function()
       while not client.closed do
         local request

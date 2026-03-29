@@ -57,8 +57,11 @@ static int f_stream_write(lua_State* L) {
 			written = 0;
 		if (blocking)
 			fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
-		if (written < 0) 
-			return luaL_error(L, "error writing to stream: %s", strerror(errno));
+		if (written < 0) {
+			lua_pushnil(L);
+			lua_pushfstring(L, "error writing to stream: %s", strerror(errno));
+			return 2;
+		}
 		lua_pushinteger(L, written);
 		return 1;
 }
@@ -508,7 +511,9 @@ int luaopen_wtk_c(lua_State* L) {
 			local yieldable = coroutine.isyieldable()\n\
 			while #chunk > 0 do\n\
 					local total_written = self:__write(chunk, not yieldable)\n\
-					if total_written > 0 then\n\
+					if not total_written then\n\
+						break\n\
+					elseif total_written > 0 then\n\
 							chunk = chunk:sub(total_written + 1)\n\
 					elseif yieldable then\n\
 							self:yield()\n\
