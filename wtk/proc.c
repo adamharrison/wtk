@@ -37,16 +37,29 @@ static int f_proc_new(lua_State* L) {
         close(stderr_pipe[0]);
         close(stdin_pipe[1]);
         const char* argv[256] = {0};
+        const char* envp[256] = {0};
         size_t len = lua_rawlen(L, 1);
         for (int i = 1; i <= len && i < 256; ++i) {
             lua_rawgeti(L, 1, i);
             argv[i - 1] = lua_tostring(L, -1);
             lua_pop(L, 1);
         }
+        if (lua_type(L, 2) == LUA_TTABLE) {
+            lua_getfield(L, 2, "env");
+            if (!lua_isnil(L, -1)) {
+                size_t len = lua_rawlen(L, -1);
+                for (int i = 1; i <= len && i < 256; ++i) {
+                    lua_rawgeti(L, -1, i);
+                    envp[i - 1] = lua_tostring(L, -1);
+                    lua_pop(L, 1);
+                }
+            }
+            lua_pop(L, 1);
+        }
         dup2(stdin_pipe[0], 0);
         dup2(stdout_pipe[1], 1);
         dup2(stderr_pipe[1], 2);
-        execvp(argv[0], (char* const*)argv);
+        execvpe(argv[0], (char* const*)argv, (char* const*)envp);
         fprintf(stderr, "error opening process at %s: %s", argv[0], strerror(errno));
         fflush(stderr);
         exit(-1);
@@ -149,11 +162,13 @@ int luaopen_wtk_proc_c(lua_State* L) {
         end\n\
     end\n\
     function proc.new(prog, options)\n\
+        if options and options.env then local t = {} for k,v in pairs(options.env) do table.insert(t, k .. '=' .. v) end options.env = t end\n\
         local p = proc.__new(type(prog) == 'string' and { os.getenv('SHELL') or 'sh', '-c', prog } or prog, options)\n\
-        if options and options.stdin == false then p.stdin:close() end
-        if options and options.stdin ~= nil then p.stdin:print(options.stdin) p.stdin:close() end
-        if options and options.stderr == false then p.stderr:close() end
-        if options and options.stdout == false then p.stdout:close() end
+        if options and options.stdin == false then p.stdin:close() end\n\
+        if options and options.stdin ~= nil then p.stdin:print(options.stdin) p.stdin:close() end\n\
+        if options and options.stderr == false then p.stderr:close() end\n\
+        if options and options.stdout == false then p.stdout:close() end\n\
+        return p\n\
     end\n\
     function proc.run(prog, options)\n\
         local p = proc.new(prog, options)\n\

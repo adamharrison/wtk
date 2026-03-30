@@ -333,7 +333,7 @@ function Server.new(t)
   t.routes = { GET = { }, POST = { }, PUT = { }, DELETE = { } }
   local self = setmetatable(t, Server) 
   self.log = t.log or Server.Log.new(t.verbose)
-  local type, address, port = self.socket:peer()
+  local type, address, port, peer = self.socket:peer()
   if type == "unix" then
     self.log:info("Server up at %s", address)
   else 
@@ -424,7 +424,19 @@ function Server:route(method, path, func)
       end
     end
     table.insert(self.routes[method], { path = target_path, handler = func }) 
-    table.sort(self.routes[method], function(a,b) return #a.path > #b.path end) 
+    table.sort(self.routes[method], function(a,b) 
+      local _, counta = a.path:gsub("/", "")
+      local _, countb = b.path:gsub("/", "")
+      if counta ~= countb then 
+        return counta > countb
+      end 
+      local _, counta = a.path:gsub("%(", "")
+      local _, countb = b.path:gsub("%(", "")
+      if counta ~= countb then 
+        return counta < countb
+      end 
+      return #a.path > #b.path 
+    end) 
   end
 end
 function Server:get(path, func) return self:route("GET", path, func) end

@@ -302,7 +302,7 @@ static int f_server_socket_peer(lua_State* L) {
 		lua_pushliteral(L, "inet");
 		lua_pushstring(L, inet_ntoa(((struct sockaddr_in*)own_addr)->sin_addr));
 		
-		lua_pushinteger(L, ntohs(((struct sockaddr_in*)peer_addr)->sin_port));
+		lua_pushinteger(L, ntohs(((struct sockaddr_in*)own_addr)->sin_port));
 		if (!getpeername(sock->fd, (struct sockaddr*)&peer_addr, &peer_addr_len))
 			lua_pushstring(L, inet_ntoa(((struct sockaddr_in*)peer_addr)->sin_addr));
 		else

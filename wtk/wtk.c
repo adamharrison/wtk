@@ -522,7 +522,7 @@ int luaopen_wtk_c(lua_State* L) {
 			return self\n\
 	end\n\
 	function wtk.Stream:flush() return self end\n\
-	function wtk.Stream:print(chunk, ...) return self:write(string.format(chunk .. '\\n', ...) end\n\
+	function wtk.Stream:print(chunk, ...) return self:write(string.format(chunk .. '\\n', ...)) end\n\
 	function wtk.Stream:yield() coroutine.yield({ fd = self[0] or self[1], type = self[0] and self[1] and 'both' or (self[0] and 'read' or 'write') }) end\n\
 	function wtk.Stream:read(target, nonblocking)\n\
 			if not self.buffer then self.buffer = '' end\n\
