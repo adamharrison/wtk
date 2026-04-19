@@ -5,6 +5,7 @@ local system = wtk.system
 local socket, sha1, base64 = driver.socket, driver.sha1, driver.base64
 local PACKET_SIZE = 4096
 
+local function merge(t1, t2) local t = {} for k,v in pairs(t1) do t[k] = v end for k,v in pairs(t2) do t[k] = v end return t end
 local Server = { Socket = driver.socket, sha1 = driver.sha1, base64 = driver.base64 }
 Server.__index = Server
 
@@ -65,20 +66,21 @@ function Server.Websocket:read()
 end
 
 
-local Response = { }
-Response.__index = Response
-function Response.new(code, headers, body) return setmetatable({ code = code, headers = headers or {}, body = body }, Response) end
-function Response:write_header(client)
+Server.Response = { }
+Server.Response.__index = Server.Response
+function Server.Response.new(code, headers, body) return setmetatable({ code = code, headers = headers or {}, body = body }, Server.Response) end
+function Server.Response:write_header(client)
   if client.closed then return end
   local parts = { string.format("%s %d %s\r\n", "HTTP/1.1", self.code, client.server.codes[self.code]) }
-  if self.body and type(self.body) == 'string' and not self.headers['content-length'] then self.headers['content-length'] = #self.body end
+  if self.body and type(self.body) == 'string' and not self.headers['content-length'] and self.headers['transfer-encoding'] ~= 'chunked' then self.headers['content-length'] = #self.body end
   if not self.headers['connection'] or self.headers['connection']:find("^%s*%") then self.headers['connection'] = 'keep-alive' end
+  if not self.headers['date'] or self.headers['date']:find("^%s*%") then self.headers['date'] = os.date("!%a, %d %b %Y %H:%M:%S GMT") end
   for key,value in pairs(self.headers) do table.insert(parts, string.format("%s: %s\r\n", key, value)) end
   table.insert(parts, "\r\n")
   client:write_block(table.concat(parts))
 end
 
-function Response:write_encoded(client, chunk)
+function Server.Response:write_encoded(client, chunk)
   if self.headers['transfer-encoding'] == 'chunked' then
     client:write_block(string.format("%x\r\n", #chunk))
     client:write_block(chunk)
@@ -86,15 +88,20 @@ function Response:write_encoded(client, chunk)
   else
     client:write_block(chunk)
   end
+  return chunk and #chunk
 end
 
-function Response:write(client)
+function Server.Response:write(client)
   if client.closed then return end
   self:write_header(client)
   if self.body then 
     if type(self.body) == 'function' then
       for chunk in self.body do
         if #chunk > 0 then
+          if client.closed then 
+            if self.code == 206 then break end
+            error({ code = 400, message = "Client unexpectedly closed connection.", verbose = true }) 
+          end
           self:write_encoded(client, chunk)
         end
         coroutine.yield()
@@ -152,7 +159,7 @@ function Request:parse_headers()
   assert(self.method and self.path, "malformed request")
   if self.search then self.params = self:parse_form(self.search) end
   for key,value in headers:gmatch("([^%:]+):%s*(.-)\r\n") do self.headers[key:lower()] = value end
-  for key,value in (self.headers.cookie or ""):gmatch("([^=]+)=([^;]+)") do self.cookies[key] = value:gsub("%%([a-fA-F0-9][a-fA-F0-9])", function(e) return string.char(tonumber(e, 16)) end) end
+  for key,value in (self.headers.cookie or ""):gmatch("([^=;%s]+)=([^;]+)") do self.cookies[key] = value:gsub("%%([a-fA-F0-9][a-fA-F0-9])", function(e) return string.char(tonumber(e, 16)) end) end
   if #remainder > 0 then self.client.buffer = remainder end
   assert(self.method ~= "POST" or self.headers['content-length'], "malformed request, requires content-length")
   self.client.server.log:verbose("REQ %s %s %s", self.method, self.path, self.client.peer)
@@ -185,19 +192,43 @@ function Request:read(len)
 end
 function Request:respond(code, headers, body) 
   self.responded = true 
-  if not headers['set-cookie'] and self.cookies then 
+  if headers and not headers['set-cookie'] and self.cookies then 
     local cookies = {}
     for key,value in pairs(self.cookies) do table.insert(cookies, key .. "=" .. tostring(value):gsub("[%c:/?#%[%]@!$&'\"%(%)*+,;=%%]", function(e) return "%" .. string.format("%02x", e:byte(1)) end)) end
     if #cookies > 0 then headers['set-cookie'] = table.concat(cookies, ';') end
   end
-  Response.new(code, headers, body):write(self.client) 
-  return self 
+  local res = (type(code) == 'table' and getmetatable(code) == Server.Response and code or Server.Response.new(code, headers, body))
+  res:write(self.client)
+  return res
 end
 function Request:redirect(path) return self:respond(302, { ["location"] = path }) end
-function Request:file(path) 
+function Request:file(path, headers)
   assert(not path:find("%.%."), "invalid path") 
-  return self:respond(200, { ['content-type'] = self.client.server:mimetype(path), ["cache-control"] = not self.client.server.debug and "max-age=86400" }, assert(io.open(path, "rb"), { code = 404 }):read("*all")) 
+  if not wtk.system.stat(path) then
+    return self:respond(200, merge({ ['content-type'] = self.client.server:mimetype(path) }, headers or {}), assert(packed[path], { code = 404 }))
+  end
+  local stat = assert(wtk.system.stat(path), { code = 404 })
+  assert(stat.type == "file", { code = 404 })
+  local s, e = 0, stat.size
+  if self.headers['range'] then
+    local hs, he = self.headers['range']:match("(%d*)%-(%d*)")
+    s, e = tonumber(hs), he ~= "" and tonumber(he) or stat.size
+  end
+  headers = merge({ ['last-modified'] = os.date("%a, %d %b %Y %H:%M:%S GMT", stat.mtime), ['content-length'] = e - s, ['accept-ranges'] = 'bytes', ['content-type'] = self.client.server:mimetype(path), ["cache-control"] = not self.client.server.debug and "max-age=86400" or nil }, headers or {})
+  local f = assert(wtk.io.file(path, "rb"), { code = 404 })
+  if self.headers['range'] then
+    headers['content-range'] = string.format("bytes %d-%d/%d", s, e - 1, stat.size)
+    f:seek("set", s)
+  end
+  return self:respond(self.headers['range'] and 206 or 200, headers, function() 
+    if s >= e then return nil end
+    local chunk = f:read(math.min(512*1024, e - s)) 
+    if not chunk then return nil end
+    s = s + #chunk
+    return chunk
+  end) 
 end
+function Request:attachment(path, headers) return self:file(path, merge(headers or {}, { ["Content-Disposition"] = "attachment; filename=\"" .. path:gsub(".*/", ""):gsub("\"", "") .. "\"" })) end
 function Request:parts()
   local boundary = self.headers['content-type']:match("multipart/form-data;%s+boundary=(.+)$")
   if not boundary then return function() return nil end end
@@ -246,7 +277,7 @@ end
 
 local Client = {}
 Client.__index = Client
-function Client.new(server, socket) return setmetatable({ last_activity = os.time(), server = server, waiting = nil, socket = socket, responsed = false, peer = select(2, socket:peer()) }, Client) end
+function Client.new(server, socket) return setmetatable({ last_activity = os.time(), server = server, waiting = nil, socket = socket, responsed = false, peer = select(4, socket:peer()) }, Client) end
 function Client:write(buf) 
   self.last_activity = os.time() 
   return self.socket:send(buf) 
@@ -294,46 +325,15 @@ function Client:read(len)
 end
 function Client:close() self.server.log:verbose("Manually closing connnection.") self.socket:close() self.closed = true end
 function Client:yield(type) coroutine.yield({ socket = self.socket, type = type or "read" }) end
-function Client:process()
-  while coroutine.status(self.co) ~= "dead" do
-    local status, result = coroutine.resume(self.co)
-    if coroutine.status(self.co) ~= "dead" then
-      if result then
-        if self.waiting and self.waiting ~= result.socket or (self.waiting_type ~= result.waiting_type) then   
-          self.server.loop:rm(self.waiting) 
-          self.waiting = nil 
-          self.waiting_type = nil
-        end
-        if not self.waiting and (result.socket or result.fd or result.waiting) then
-          self.waiting_type = result.type or "read"
-          self.waiting = self.server.loop:add(result.socket or result.fd or timer.new(result.timeout), function() 
-            self:process() 
-          end, self.waiting_type, result.edge)
-        end
-        break
-      else
-        if self.waiting then
-          self.server.loop:rm(self.waiting)
-          self.waiting = nil
-          self.waiting_type = nil
-        end
-        self.server.loop:add(function() self:process() end)
-      end
-    end
-  end
-  if coroutine.status(self.co) == "dead" and self.waiting then
-    self.server.loop:rm(self.waiting)
-  end
-end
 
 function Server.new(t) 
   t.socket = assert(socket.bind(t.host or "0.0.0.0", t.port or (t.debug and 8080 or 80)), "unable to bind")
   t.mimes = { ["svg"] = "image/svg+xml", ["jpeg"] = "image/jpeg", ["jpg"] = "image/jpeg", ["png"] = "image/png", ["gif"] = "image/gif", ["js"] = "text/javascript", ["html"] = "text/html", ["css"] = "text/css", ["txt"] = "text/plain" }
-  t.codes = { [101] = "Switching Protocols", [200] = "OK", [201] = "Created", [204] = "No Content", [301] = "Moved Permanently", [302] = "Found", [400] = "Bad Request", [403] = "Forbidden", [404] = "Not Found", [500] = "Internal Server Error" }
+  t.codes = { [101] = "Switching Protocols", [200] = "OK", [201] = "Created", [204] = "No Content", [206] = "Partial Content", [301] = "Moved Permanently", [302] = "Found", [400] = "Bad Request", [403] = "Forbidden", [404] = "Not Found", [500] = "Internal Server Error" }
   t.routes = { GET = { }, POST = { }, PUT = { }, DELETE = { } }
   local self = setmetatable(t, Server) 
-  self.log._verbose = t.verbose
-  local type, address, port = self.socket:peer()
+  self.log = t.log or Server.Log.new(t.verbose)
+  local type, address, port, peer = self.socket:peer()
   if type == "unix" then
     self.log:info("Server up at %s", address)
   else 
@@ -342,26 +342,28 @@ function Server.new(t)
   return self
 end
 
-function Server:error_handler(request, err, client, meta)
+function Server:default_error_handler(request, err, client, meta)
+  local msg, code = nil, 500
   if type(err) == 'table' and err.code and type(err.code) == "number" then
-    local msg = string.format("%d Error", err.code)
+    msg, code = string.format("%d Error", err.code), err.code
     if err.message then msg = msg .. ": " .. err.message end
     if request and not request.responded then request:respond(err.code, { ["Content-Type"] = "text/plain; charset=UTF-8" }, (err.message or (err.code .. " " .. self.codes[err.code])) .. "\n") end
   else
-    local msg = string.format("Unhandled Error: %s", err) 
+    msg = string.format("Unhandled Error: %s", err) 
     if request and not request.responded then request:respond(500, { ["Content-Type"] = "text/plain; charset=UTF-8" }, "500 Internal Server Error") end
   end
-  if self.verbose or not err.verbose then self.log:error(self.verbose and (msg .. "\n" .. meta.stack) or msg) end
+  if self.verbose or not err.verbose then self.log:error((self.verbose and (self.very_verbose or code == 500)) and (msg .. "\n" .. meta.stack) or msg) end
   if not request then client:close() end
   if request and request.client.websocket then request.client.websocket:close() end
 end
+Server.error_handler = Server.default_error_handler
 
 function Server:accept()
   local socket = self.socket:accept()
   if socket then 
     local client = Client.new(self, socket)
-    self.log:verbose("Incoming connection from '%s'", select(2, socket:peer()))
-    client.co = coroutine.create(function() 
+    self.log:verbose("Incoming connection from '%s'", select(4, socket:peer()))
+    client.job = self.loop:job(function()
       while not client.closed do
         local request
         try(function()
@@ -371,7 +373,11 @@ function Server:accept()
             if not request.responded then error({ code = 404 }) end
           end
         end, function(err)
-          self:error_handler(request, err.error, client, err)
+          try(function()
+            self:error_handler(request, err.error, client, err)
+          end, function(err)
+            self.log:error("Error in error handler: %s\n%s", err.error, err.stack)
+          end)
         end)
         -- clear out buffer if it wasn't read
         if request then request:body() end
@@ -384,7 +390,7 @@ function Server:accept()
 end
 function Server:add(loop)
   loop:add(self.socket, function() 
-    self:accept():process() 
+    self:accept()
   end, "read")
   self.loop = loop
   return self
@@ -410,26 +416,42 @@ function Server:default_handler(request)
 end
 function Server:route(method, path, func) 
   local target_path = "^" .. path .. "$"
-  for i,v in ipairs(self.routes[method]) do
-    if v.path == target_path then
-      v.handler = func
-      return
+  for _, method in ipairs(type(method) == 'table' and method or { method }) do
+    for i,v in ipairs(self.routes[method]) do
+      if v.path == target_path then
+        v.handler = func
+        return
+      end
     end
+    table.insert(self.routes[method], { path = target_path, handler = func }) 
+    table.sort(self.routes[method], function(a,b) 
+      local _, counta = a.path:gsub("/", "")
+      local _, countb = b.path:gsub("/", "")
+      if counta ~= countb then 
+        return counta > countb
+      end 
+      local _, counta = a.path:gsub("%(", "")
+      local _, countb = b.path:gsub("%(", "")
+      if counta ~= countb then 
+        return counta < countb
+      end 
+      return #a.path > #b.path 
+    end) 
   end
-  table.insert(self.routes[method], { path = target_path, handler = func }) 
-  table.sort(self.routes[method], function(a,b) return #a.path > #b.path end) 
 end
 function Server:get(path, func) return self:route("GET", path, func) end
 function Server:post(path, func) return self:route("POST", path, func) end
 function Server:put(path, func) return self:route("PUT", path, func) end
 function Server:delete(path, func) return self:route("DELETE", path, func) end
 
-Server.log = {}
-function Server.log:log(type, message, ...) io.stdout:write(string.format("[%5s][%s.%03d]: " .. message .. "\n", type, os.date("%Y-%m-%dT%H:%M:%S"), (math.floor(wtk.system.time() * 1000.0) % 1000), ...)):flush() end
-function Server.log:verbose(message, ...) if self._verbose then self:log("VERB", message, ...) end end
-function Server.log:info(message, ...) self:log("INFO", message, ...) end
-function Server.log:error(message, ...) self:log("ERROR", message, ...) end
-function Server.log:warn(message, ...) self:log("WARN", message, ...) end
+Server.Log = {}
+Server.Log.__index = Server.Log
+function Server.Log.new(verbose) return setmetatable({ _verbose = verbose }, Server.Log) end
+function Server.Log:log(type, message, ...) wtk.io.stdout:write(string.format("[%5s][%s.%03d]: " .. message .. "\n", type, os.date("%Y-%m-%dT%H:%M:%S"), (math.floor(wtk.system.time() * 1000.0) % 1000), ...)):flush() end
+function Server.Log:verbose(message, ...) if self._verbose then self:log("VERB", message, ...) end end
+function Server.Log:info(message, ...) self:log("INFO", message, ...) end
+function Server.Log:error(message, ...) self:log("ERROR", message, ...) end
+function Server.Log:warn(message, ...) self:log("WARN", message, ...) end
 
 function Server:hot_reload(loop, file, options)
   if not system.mtime(file) then return self.log:warn("Can't find " .. file .. ", so cannot hot reload.") end
@@ -438,7 +460,7 @@ function Server:hot_reload(loop, file, options)
     if old_modified < system.mtime(file) then
       local status, err = pcall(function()
         for k,v in pairs(package.loaded) do if not k:find("%.c$") and not k:find("%.c%.") then package.loaded[k] = nil end end
-        assert(load(io.open(file, "rb"):read("*all"), "=" .. file))()
+        assert(load(wtk.file.open(file, "rb"):read("*all"), "=" .. file))()
         self.log:info("Hot reloaded " ..  file .. ".")
         collectgarbage()
       end)
@@ -458,7 +480,8 @@ function Server:console()
   if err then self.log:error(err) end
 end
 
-function Server.escapeURI(param) return param:gsub("[^A-Za-z0-9%-_%.%!~%*'%(%)]", function(e) return string.format("%%%02x", e:byte(1)) end) end
+function Server.escapeURI(param) return tostring(param):gsub("[^A-Za-z0-9%-_%.%!~%*'%(%)]", function(e) return string.format("%%%02x", e:byte(1)) end) end
+function Server.unescapeURI(param) return tostring(param):gsub("%%([a-f0-9A-F][a-f0-9A-F])", function(e) return string.char(tonumber(e, 16)) end) end
 
 
 return Server

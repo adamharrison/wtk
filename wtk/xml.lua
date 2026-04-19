@@ -197,8 +197,8 @@ function xml.parse(text, options)
         else
           s, e, content = assert(text:find("^([^<]+)", offset))
           table.insert(tags[#tags].children, content);
-          local _, _, stripped = content:find("%s*(%S+)%s*")
-          if stripped then
+          local stripped = content:gsub("^%s*", ""):gsub("%s*$", "")
+          if stripped and #stripped > 0 then
             table.insert(tags[#tags].nodes, stripped)
           end
           offset = e + 1

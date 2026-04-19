@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <lua.h>
 #include <lualib.h>
 #include <lauxlib.h>
@@ -13,13 +14,141 @@
 #include <errno.h>
 #include <signal.h>
 #include <fcntl.h>
+#include <dirent.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 
 typedef struct { int fd; } generic_fd_t;
-typedef struct { int fd; double recurring; } countdown_t;
 
 #define DIRSEP '/'
+
+int f_stream_new(lua_State* L, int readfd, int writefd) {
+		lua_newtable(L);
+		if (readfd > 0) {
+			lua_pushinteger(L, readfd);
+			lua_rawseti(L, -2, 0);
+		}
+	  if (writefd > 0) {
+			lua_pushinteger(L, writefd);
+			lua_rawseti(L, -2, 1);
+		}
+		luaL_setmetatable(L, "wtk.c.stream");
+		return 1;
+}
+
+static int f_stream_write(lua_State* L) {
+		luaL_checktype(L, 1, LUA_TTABLE);
+		size_t len;
+		lua_rawgeti(L, 1, 1);
+		if (lua_isnil(L, -1)) {
+			lua_pushnil(L);
+			lua_pushstring(L, "stream not open for writing");
+			return 2;
+		}
+		int fd = luaL_checkinteger(L, -1);
+		const char* chunk = luaL_checklstring(L, 2, &len);
+		int blocking = lua_toboolean(L, 3);
+		if (blocking)
+			fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) & ~O_NONBLOCK);
+		int written = write(fd, chunk, len);
+		if (written == 0)
+			return 0;
+		if (written == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
+			written = 0;
+		if (blocking)
+			fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+		if (written < 0) {
+			lua_pushnil(L);
+			lua_pushfstring(L, "error writing to stream: %s", strerror(errno));
+			return 2;
+		}
+		lua_pushinteger(L, written);
+		return 1;
+}
+
+static int f_stream_read(lua_State* L) {
+		luaL_checktype(L, 1, LUA_TTABLE);
+		int bytes = luaL_checkinteger(L, 2);
+		int blocking = lua_toboolean(L, 3);
+		lua_rawgeti(L, 1, 0);
+		if (lua_isnil(L, -1)) {
+			lua_pushnil(L);
+			lua_pushstring(L, "stream not open for reading");
+			return 2;
+		}
+		int fd = luaL_checkinteger(L, -1);
+		lua_pop(L, 1);
+		char buffer[16*1024]={0};
+		luaL_Buffer b;
+		luaL_buffinit(L, &b);
+		int total_read = 0;
+		if (blocking)
+			fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) & ~O_NONBLOCK);
+		while (total_read < bytes) {
+			int to_read = sizeof(buffer) < (bytes - total_read) ? sizeof(buffer) : (bytes - total_read);
+			int result = to_read > 0 ? read(fd, buffer, to_read) : 0;
+			if (result == 0 && total_read == 0)
+				return 0;
+			if (result == -1 && (errno == EWOULDBLOCK || errno == EAGAIN))
+				result = 0;
+			if (result < 0) {
+				if (blocking)
+						fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+				return luaL_error(L, "error reading from stream: %s", strerror(errno));
+			} else if (result > 0) {
+				luaL_addlstring(&b, buffer, result);
+				total_read += result;
+			} else
+				break;
+		}
+		if (blocking)
+			fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+		luaL_pushresult(&b);
+		return 1;
+}
+
+static int f_stream_seek(lua_State* L) {
+	lua_rawgeti(L, 1, 0);
+	int fd = lua_tointeger(L, -1);
+	lua_pop(L, 1);
+	if (fd == -1) {
+		lua_rawgeti(L, 1, 1);
+		fd = lua_tointeger(L, -1);
+		lua_pop(L, 1);
+	}
+	const char* whence = luaL_checkstring(L, 2);
+	int res = lseek(fd, luaL_checkinteger(L, 3), strcmp(whence, "cur") == 0 ? SEEK_CUR : (strcmp(whence, "end") == 0 ? SEEK_END : SEEK_SET));
+	if (res == -1) {
+		lua_pushnil(L);
+		lua_pushstring(L, strerror(errno));
+		return 2;
+	}
+	lua_pushinteger(L, res);
+	return 1;
+}
+
+static int f_stream_close(lua_State* L) {
+		luaL_checktype(L, 1, LUA_TTABLE);
+		for (int i = 0; i < 2; ++i) {
+			lua_rawgeti(L, 1, i);
+			if (!lua_isnil(L, -1))
+				close(luaL_checkinteger(L, -1));
+			lua_pop(L, 1);
+			lua_pushnil(L);
+			lua_rawseti(L, 1, i);
+		}
+		return 0;
+}
+
+static const luaL_Reg stream_lib[] = {
+		{ "__gc",      f_stream_close },
+		{ "__read",    f_stream_read  },
+		{ "__write",   f_stream_write },
+		{ "seek",      f_stream_seek  },
+		{ "close",     f_stream_close },
+		{ NULL,        NULL           }
+};
+
 
 #ifndef _WIN32
 
@@ -92,7 +221,8 @@ typedef struct { int fd; double recurring; } countdown_t;
 				fd = lua_tofd(L, 2);
 			}
 			struct epoll_event event = { .events = mask, .data = { .fd = fd } };
-			epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &event);
+			if (epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &event))
+				return luaL_error(L, "unable to add fd %d: %s", fd, strerror(errno));
 			luaL_getsubtable(L, 1, "fds");
 			lua_pushinteger(L, fd); 
 			lua_pushvalue(L, table);
@@ -103,8 +233,8 @@ typedef struct { int fd; double recurring; } countdown_t;
 	}
 
 	static int f_loop_rm(lua_State* L) {
-		lua_getfield(L, 1, "epollfd");
 		int fd = lua_tofd(L, 2);
+		lua_getfield(L, 1, "epollfd");
 		epoll_ctl(luaL_checkinteger(L, -1), EPOLL_CTL_DEL, fd, NULL);
 		luaL_getsubtable(L, 1, "fds");
 		lua_pushinteger(L, fd);
@@ -117,42 +247,33 @@ typedef struct { int fd; double recurring; } countdown_t;
 	static int f_loop_run(lua_State* L) {
 		lua_getfield(L, 1, "epollfd");
 		int epollfd = luaL_checkinteger(L, -1);
-		struct epoll_event ev, events[100];
+		struct epoll_event ev = {0}, events[100] = {0};
 		luaL_getsubtable(L, 1, "fds");
 		while (1) {
 			luaL_getsubtable(L, 1, "deferred");
+			lua_newtable(L);
+			lua_setfield(L, 1, "deferred");
 			size_t len = lua_rawlen(L, -1);
 			if (len) {
 				for (int i = 1; i <= len; ++i) {
 					lua_rawgeti(L, -1, i);
 					lua_call(L, 0, 0);
 				}
-				lua_newtable(L);
-				lua_setfield(L, 1, "deferred");
 			}
 			lua_pop(L, 1);
-			int nfds = epoll_wait(epollfd, events, 100, -1);
+			int nfds = epoll_wait(epollfd, events, 100, len > 0 ? 0 : -1);
 			for (int n = 0; n < nfds; ++n) {
 				lua_pushinteger(L, events[n].data.fd);
 				lua_rawget(L, -2);
-				lua_rawgeti(L, -1, 2);
-				countdown_t* countdown = luaL_testudata(L, -1, "wtk.c.countdown");
-				if (countdown) {
-					long long length;
-					length = read(countdown->fd, &length, sizeof(length));
+				if (!lua_isnil(L, -1)) { // in the case where we've removed the callback, and there are lingering events.
+					lua_rawgeti(L, -1, 1);
+					if (lua_pcall(L, 0, 1, 0))
+						return luaL_error(L, "error running callback: %s", lua_tostring(L, -1));
+					lua_pop(L, 2);
+				} else {
+					// epoll_ctl(epollfd, EPOLL_CTL_DEL, events[n].data.fd, NULL);
+					lua_pop(L, 1);
 				}
-				lua_pop(L, 1);
-				lua_rawgeti(L, -1, 1);
-				if (lua_pcall(L, 0, 1, 0))
-					return luaL_error(L, "error running callback: %s", lua_tostring(L, -1));
-				if (lua_type(L, -1) == LUA_TBOOLEAN && !lua_toboolean(L, -1))  {
-					epoll_ctl(luaL_checkinteger(L, -1), EPOLL_CTL_DEL, events[n].data.fd, NULL);
-					luaL_getsubtable(L, 1, "fds");
-					lua_pushinteger(L, events[n].data.fd);
-					lua_pushnil(L); 
-					lua_rawset(L, -3);
-				}
-				lua_pop(L, 2);
 			}
 		}
 		return 1;
@@ -174,55 +295,135 @@ typedef struct { int fd; double recurring; } countdown_t;
 	};
 	
 	static int f_countdown_new(lua_State* L) {
-		countdown_t* countdown = lua_newuserdata(L, sizeof(countdown_t));
-		luaL_setmetatable(L, "wtk.c.countdown");
-		countdown->fd = timerfd_create(CLOCK_MONOTONIC, 0);
 		double offset = luaL_checknumber(L, 1);
-		countdown->recurring = luaL_optnumber(L, 2, 0);
-		struct timespec now = {0};
+		double recurring = luaL_optnumber(L, 2, 0);
+		int fd = timerfd_create(CLOCK_MONOTONIC, 0);
 		struct itimerspec new_value = {0};
-		if (clock_gettime(CLOCK_MONOTONIC, &now) == -1)
-			return luaL_error(L, "can't get time: %s", strerror(errno));
-		new_value.it_value.tv_sec = now.tv_sec + (int)offset;
-		new_value.it_value.tv_nsec = now.tv_nsec + (int)(fmod(offset, 1.0) * (1000000000.0));
-		new_value.it_interval.tv_sec = (int)countdown->recurring;
-		new_value.it_interval.tv_nsec = (int)(fmod(countdown->recurring, 1.0) * (1000000000.0));
-		if (timerfd_settime(countdown->fd, TFD_TIMER_ABSTIME, &new_value, NULL) == -1)
-			return luaL_error(L, "can't set timer: %s", strerror(errno));
-		return 1;
+		new_value.it_value.tv_sec = (int)offset;
+		new_value.it_value.tv_nsec = (int)(fmod(offset, 1.0) * (1000000000.0));
+		new_value.it_interval.tv_sec = (int)recurring;
+		new_value.it_interval.tv_nsec = (int)(fmod(recurring, 1.0) * (1000000000.0));
+		if (timerfd_settime(fd, 0, &new_value, NULL) == -1) {
+			lua_pushnil(L);
+			lua_pushfstring(L, "can't set timer: %s", strerror(errno));
+			return 2;
+		}
+		return f_stream_new(L, fd, -1);
 	}
 
-	static int f_countdown_gc(lua_State* L) {
-		countdown_t* countdown = luaL_checkudata(L, 1, "wtk.c.countdown");
-		if (countdown->fd)
-			close(countdown->fd);
-		return 0;
+	static int f_pipe_new(lua_State* L) {
+		int fds[2];
+		if (pipe(fds) == -1) {
+			lua_pushnil(L);
+			lua_pushfstring(L, "unable to create pipe: %s", strerror(errno));
+			return 2;
+		}
+		fcntl(fds[0], F_SETFL, fcntl(fds[0], F_GETFL, 0) | O_NONBLOCK);
+		fcntl(fds[1], F_SETFL, fcntl(fds[0], F_GETFL, 0) | O_NONBLOCK);
+		return f_stream_new(L, fds[0], fds[1]);
 	}
+	
 
-	static const luaL_Reg countdown_lib[] = {
-		{ "new",      f_countdown_new   },
-		{ "__gc",		 f_countdown_gc },
-		{ NULL,       NULL }
-	};
-
+	static int f_file_new(lua_State* L) {
+		const char* flags = luaL_optstring(L, 2, "rb");
+		int flagInt = 0;
+		if (strchr(flags, 'r') && (strchr(flags, 'w') || strchr(flags, 'a')))
+			flagInt = O_RDWR;
+		else if (strchr(flags, 'r'))
+			flagInt = O_RDONLY;
+		else if (strchr(flags, 'w'))
+			flagInt = O_WRONLY;
+		if (strchr(flags, 'w'))
+			flagInt |= O_TRUNC | O_CREAT;
+		if (strchr(flags, 'a'))
+			flagInt |= O_APPEND;
+		int fd = open(luaL_checkstring(L, 1), flagInt | O_NONBLOCK, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+		if (fd == -1) {
+			lua_pushnil(L);
+			lua_pushfstring(L, "unable to open file %s: %s", luaL_checkstring(L, 1), strerror(errno));
+			return 2;
+		}
+		return f_stream_new(L, strchr(flags, 'r') ? fd : -1, (strchr(flags, 'r') || strchr(flags, 'w')) ? fd : -1);
+	}
+	
 #endif
 
-static int f_system_mtime(lua_State* L) {
+static int f_system_ls(lua_State* L) {
+	DIR* dir = opendir(luaL_checkstring(L, 1));
+	if (!dir) {
+		lua_pushnil(L);
+		lua_pushstring(L, strerror(errno));
+		return 2;
+	}
+	struct dirent* entry;
+	int i = 1;
+	lua_newtable(L);
+	while ((entry = readdir(dir)) != NULL) {
+		if (strcmp(entry->d_name, "..") == 0 || strcmp(entry->d_name, ".") == 0 )
+			continue;
+		lua_newtable(L);
+		lua_pushstring(L, entry->d_name);
+		lua_setfield(L, -2, "name");
+		if (entry->d_type != DT_UNKNOWN) {
+			lua_pushstring(L, entry->d_type == DT_DIR ? "dir" : (entry->d_type == DT_REG ? "file" : "other"));
+			lua_setfield(L, -2, "type");
+		}
+		lua_rawseti(L, -2, i++);
+	}
+	closedir(dir);
+	return 1;
+}
+
+static int f_system_mkdir(lua_State* L) {
+	if (mkdir(luaL_checkstring(L, 1), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH)) {
+		lua_pushnil(L);
+		lua_pushstring(L, strerror(errno));
+		return 2;
+	}
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
+static int f_system_rmdir(lua_State* L) {
+	if (rmdir(luaL_checkstring(L, 1))) {
+		lua_pushnil(L);
+		lua_pushstring(L, strerror(errno));
+		return 2;
+	}
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
+static int f_system_realpath(lua_State* L) {
+	char path[PATH_MAX];
+	if (realpath(luaL_checkstring(L, 1), path)) {
+		lua_pushnil(L);
+		lua_pushstring(L, strerror(errno));
+		return 2;
+	}
+	lua_pushstring(L, path);
+	return 1;
+}
+
+static int f_system_stat(lua_State* L) {
 	struct stat file;
 	if (stat(luaL_checkstring(L, 1), &file)) {
 		lua_pushnil(L);
 		lua_pushstring(L, strerror(errno));
 		return 2;
 	}
-	lua_pushnumber(L, file.st_mtime);
-  return 1;
+	lua_newtable(L);
+	lua_pushnumber(L, file.st_mtime), lua_setfield(L, -2, "mtime");
+	lua_pushinteger(L, file.st_size), lua_setfield(L, -2, "size");
+	lua_pushstring(L, S_ISREG(file.st_mode) ? "file" : (S_ISDIR(file.st_mode) ? "dir" : "other")), lua_setfield(L, -2, "type");
+	return 1;
 }
 
 static int f_system_time(lua_State* L) {
 	struct timeval tv;
 	gettimeofday(&tv, NULL);
 	lua_pushnumber(L, (double)tv.tv_sec + tv.tv_usec / 1000000.0);
-  return 1;
+	return 1;
 }
 
 static int f_system_isatty(lua_State* L){
@@ -230,11 +431,21 @@ static int f_system_isatty(lua_State* L){
 	return 1;
 }
 
+static const luaL_Reg io_lib[] = {
+	{ "pipe",      f_pipe_new       },
+	{ "file",      f_file_new       },
+	{ "countdown", f_countdown_new  },
+};
+
 static const luaL_Reg system_lib[] = {
-  { "mtime",    f_system_mtime  },
-  { "time",     f_system_time   },
-  { "isatty",	 f_system_isatty  },
-  { NULL,       NULL }
+	{ "ls",        f_system_ls      },
+	{ "mkdir",     f_system_mkdir   },
+	{ "rmdir",     f_system_rmdir   },
+	{ "stat",      f_system_stat    },
+	{ "realpath",  f_system_realpath},
+	{ "time",      f_system_time    },
+	{ "isatty",	  f_system_isatty  },
+	{ NULL,        NULL }
 };
 
 int luaW_loadblock(lua_State* L, const char* name, int line, const char* str) {
@@ -250,25 +461,176 @@ int luaW_loadblock(lua_State* L, const char* name, int line, const char* str) {
 	return res;
 }
 
+
 #define luaW_newclass(L, name) lua_pushliteral(L, #name), luaL_newmetatable(L, "wtk.c." #name), luaL_setfuncs(L, name##_lib, 0), lua_pushvalue(L, -1), lua_setfield(L, -2, "__index"), lua_rawset(L, -3)
 
 int luaopen_wtk_c(lua_State* L) {
 	lua_newtable(L);
-  luaW_newclass(L, system);
-  #ifndef _WIN32
-		luaW_newclass(L, countdown);
+	luaW_newclass(L, system);
+	#ifndef _WIN32
+		luaW_newclass(L, stream);
 		luaW_newclass(L, loop);
 	#endif
-  if (luaW_loadblock(L, __FILE__, __LINE__, "local wtk = ...\n\
-  wtk.Loop = wtk.loop\n\
-  wtk.error = {\n\
-		__tostring = function(self) return tostring(self.error) end,\n\
+	luaW_newclass(L, io);
+	lua_getfield(L, -1, "io");
+	f_stream_new(L, 0, -1), lua_setfield(L, -2, "stdin");
+	f_stream_new(L, -1, 1), lua_setfield(L, -2, "stdout");
+	f_stream_new(L, -1, 2), lua_setfield(L, -2, "stderr");
+	lua_pop(L, 1);
+	if (luaW_loadblock(L, __FILE__, __LINE__, "local wtk = ...\n\
+	wtk.Loop = wtk.loop\n\
+	wtk.Stream = wtk.stream\n\
+	wtk.Stream.__index = wtk.Stream\n\
+	function wtk.Loop:job_step(job)\n\
+		if coroutine.status(job.co) ~= 'dead' then\n\
+			local status, result = assert(coroutine.resume(job.co, job))\n\
+			if coroutine.status(job.co) ~= 'dead' then\n\
+				if type(result) == 'number' then \n\
+					result = { time = wtk.io.countdown(result) } \n\
+					result.fd = result.time[0]\n\
+				end\n\
+				local waiting_obj, waiting_type = type(result) == 'table' and (result.socket or result.fd), type(result) == 'table' and result.type or 'read'\n\
+				if (not waiting_obj or not job.waiting) or (job.waiting.obj ~= waiting_obj) or (job.waiting_type ~= waiting_type) then\n\
+					if job.waiting then self:rm(job.waiting.obj) end\n\
+					job.waiting = nil\n\
+				end\n\
+				job.waiting = waiting_obj and { obj = waiting_obj, type = waiting_type, edge = result.edge, result = result }\n\
+				if job.waiting then \n\
+					self:add(job.waiting.obj, function() self:job_step(job) end, job.waiting.type, job.waiting.edge)\n\
+				else\n\
+					self:add(function() self:job_step(job) end)\n\
+				end\n\
+			end\n\
+		end\n\
+		if coroutine.status(job.co) == 'dead' and job.waiting and job.waiting.obj then \n\
+			self:rm(job.waiting.obj)\n\
+		end\n\
+		return job\n\
+	end\n\
+	function wtk.Stream:write(chunk)\n\
+			local yieldable = coroutine.isyieldable()\n\
+			while #chunk > 0 do\n\
+					local total_written = self:__write(chunk, not yieldable)\n\
+					if not total_written then\n\
+						break\n\
+					elseif total_written > 0 then\n\
+							chunk = chunk:sub(total_written + 1)\n\
+					elseif yieldable then\n\
+							self:yield()\n\
+					end\n\
+			end\n\
+			return self\n\
+	end\n\
+	function wtk.Stream:flush() return self end\n\
+	function wtk.Stream:print(chunk, ...) return self:write(string.format(chunk .. '\\n', ...)) end\n\
+	function wtk.Stream:yield() coroutine.yield({ fd = self[0] or self[1], type = self[0] and self[1] and 'both' or (self[0] and 'read' or 'write') }) end\n\
+	function wtk.Stream:read(target, nonblocking)\n\
+			if not self.buffer then self.buffer = '' end\n\
+			local yieldable = coroutine.isyieldable()\n\
+			if type(target) == 'number' then \n\
+					if target > #self.buffer then \n\
+						while true do\n\
+							local chunk = self:__read(target - #self.buffer, not yieldable)\n\
+							if not chunk then \n\
+								if #self.buffer > 0 then\n\
+									break \n\
+								else\n\
+									return nil\n\
+								end\n\
+							end\n\
+							if #chunk > 0 then\n\
+								self.buffer = self.buffer .. chunk\n\
+								break\n\
+							elseif nonblocking then\n\
+								break\n\
+							elseif yieldable then\n\
+								coroutine.yield({ fd = self[0] })\n\
+							end\n\
+						end\n\
+					end\n\
+					local bytes = self.buffer\n\
+					self.buffer = bytes:sub(target + 1)\n\
+					return bytes:sub(1, target)\n\
+			else\n\
+					assert(type(target) == 'string', 'unknown read target')\n\
+					if target:find('^%*?[aA]') then \n\
+							target = 'a'\n\
+					elseif target:find('^%*?[lL]') then\n\
+							target = 'l'\n\
+					else\n\
+							error('unknown read target', 1)\n\
+					end\n\
+					local chunks = { }\n\
+					while true do\n\
+							local chunk\n\
+							if #chunks == 0 and self.buffer and #self.buffer > 0 then\n\
+									chunk = self.buffer\n\
+							else\n\
+									chunk = self:__read(16*1024, not yieldable)\n\
+							end\n\
+							if not chunk then break end\n\
+							if #chunk > 0 then\n\
+									local s,e\n\
+									if target == 'l' then\n\
+											s,e = chunk:find('[\\r\\n]')\n\
+											if chunk:byte(s) == 13 and chunk:byte(s+1) == 10 then e = e + 1 end\n\
+									end\n\
+									if s then\n\
+											table.insert(chunks, chunk:sub(1, s - 1))\n\
+											self.buffer = chunk:sub(e + 1)\n\
+											break\n\
+									else\n\
+											table.insert(chunks, chunk)\n\
+									end\n\
+							elseif yieldable then\n\
+								coroutine.yield({ fd = self[0] })\n\
+							end\n\
+					end\n\
+					return table.concat(chunks)\n\
+			end\n\
+	end\n\
+	function wtk.Loop:job(func) return self:job_step(wtk.Promise.new({ co = coroutine.create(function(job) try(function() job:resolve(func(job)) end, function(err) job:reject(err) end) end) })) end\n\
+	function wtk.Loop:await(t)\n\
+		if type(t) ~= 'table' or #t == 0 then t = { t } end\n\
+		local signal = wtk.io.pipe()\n\
+		local status, result\n\
+		local prom = wtk.Promise.all(t):done(function(t) status, result = true, t end):fail(function(t) status, result = false, t end):always(function() signal:write('1') end)\n\
+		if status == nil then coroutine.yield({ fd = signal[0] }) end\n\
+		if not status then error(result) end\n\
+		return result\n\
+	end\n\
+	wtk.Promise = {}\n\
+	setmetatable({}, wtk.Promise)\n\
+	wtk.Promise.__index = wtk.Promise\n\
+	function wtk.Promise.new(hash) local self = setmetatable({ resolved = nil, rejected = nil, doneh = {}, failh = {} }, wtk.Promise) for k,v in pairs(hash or {}) do self[k] = v end return self end\n\
+	function wtk.Promise:on(done, fail) if self.resolved and done then done(table.unpack(self.resolved)) end if self.rejected and fail then fail(table.unpack(self.rejected)) end table.insert(self.doneh, done) table.insert(self.failh, fail) return self end\n\
+	function wtk.Promise:done(func) return self:on(func) end\n\
+	function wtk.Promise:fail(func) return self:on(nil, func) end\n\
+	function wtk.Promise:always(func) return self:on(func, func) end\n\
+	function wtk.Promise:resolve(...) self.resolved = { ... } for k,v in ipairs(self.doneh) do v(table.unpack(self.resolved)) end return self end\n\
+	function wtk.Promise:reject(...) self.rejected = { ... } for k,v in ipairs(self.failh) do v(table.unpack(self.rejected)) end return self end\n\
+	function wtk.Promise.all(promises, func)\n\
+		local res, fail, total = {}, false, 0\n\
+		local prom = wtk.Promise.new()\n\
+		for i, promise in ipairs(promises) do\n\
+			promise:done(function(r) \n\
+				total = total + 1\n\
+				res[i] = r \n\
+				if total == #promises then \n\
+					prom:resolve(res) \n\
+				end\n\
+			end):fail(function(r) prom:reject(r) end)\n\
+		end\n\
+		return prom\n\
+	end\n\
+	wtk.error = {\n\
+		__tostring = function(self) return tostring(self.error or self.stack) end,\n\
 		new = function(err, level)\n\
 			if type(err) == 'table' and getmetatable(err) == wtk.error then return err end\n\
 			return setmetatable({ error = err, stack = debug.traceback(nil, level or 2) }, wtk.error)\n\
 		end\n\
 	}\n\
-  wtk.try = function(func, catch, always, ...)\n\
+	wtk.try = function(func, catch, always, ...)\n\
 		local caught_error, catch_error, always_error, status\n\
 		local results = { xpcall(func, function(err)\n\
 			caught_error = err\n\
@@ -279,6 +641,8 @@ int luaopen_wtk_c(lua_State* L) {
 				xpcall(catch, function(err) \n\
 					catch_error = wtk.error.new(err, 3)\n\
 				end, caught_error)\n\
+			else\n\
+				catch_error = caught_error\n\
 			end\n\
 		end, ...) }\n\
 		if always then\n\
@@ -290,11 +654,12 @@ int luaopen_wtk_c(lua_State* L) {
 			error(always_error or catch_error, 0)\n\
 		end\n\
 		return table.unpack(results)\n\
-  end\n\
-  try = wtk.try\n\
-  package.loaded['wtk'] = wtk\n\
-  package.loaded['wtk.c.loop'] = wtk.loop\n\
-  package.loaded['wtk.c.system'] = wtk.system\n\
+	end\n\
+	try = wtk.try\n\
+	package.loaded['wtk'] = wtk\n\
+	package.loaded['wtk.c.loop'] = wtk.loop\n\
+	package.loaded['wtk.c.system'] = wtk.system\n\
+	wtk.system.mtime = function(path) local s, err = wtk.system.stat(path) if not s then return nil, err end return s.mtime end\n\
 	function wtk.pargs(arguments, options, short_options)\n\
 		local args = {}\n\
 		local i = 1\n\
@@ -312,20 +677,24 @@ int luaopen_wtk_c(lua_State* L) {
 			if options[option_name] then\n\
 				local flag_type = options[option_name]\n\
 				if flag_type == 'flag' then\n\
-					args[option] = (option_name == option or not option:find('^no-')) and true or false\n\
+					args[option_name] = (option_name == option or not option:find('^no-')) and true or false\n\
 				elseif flag_type == 'string' or flag_type == 'number' or flag_type == 'array' then\n\
 					if not value or value == '' then\n\
 						if i == #arguments then error('option ' .. option .. ' requires a ' .. flag_type) end\n\
 						value = arguments[i+1]\n\
 						i = i + 1\n\
 					end\n\
-					if flag_type == 'number' and tonumber(value) == nil then error('option ' .. option .. ' should be a number') end\n\
+					if flag_type == 'number' then\n\
+						value = assert(tonumber(value), 'option ' .. option .. ' should be a number')\n\
+					end\n\
 					if flag_type == 'array' then\n\
 						args[option] = args[option] or {}\n\
 						table.insert(args[option], value)\n\
 					else\n\
 						args[option] = value\n\
 					end\n\
+				else\n\
+					error('unknown flag type ' .. flag_type .. ' for ' .. option_name)\n\
 				end\n\
 			else\n\
 				local flags = nil\n\
@@ -347,10 +716,10 @@ int luaopen_wtk_c(lua_State* L) {
 		end\n\
 		return args\n\
 	end"))
-    return lua_error(L);
-  lua_pushvalue(L, -2);
-  lua_call(L, 1, 0);
-  return 1;
+		return lua_error(L);
+	lua_pushvalue(L, -2);
+	lua_call(L, 1, 0);
+	return 1;
 }
 
 #ifdef WTK_MAKE_PACKER
@@ -362,12 +731,13 @@ int luaopen_wtk_c(lua_State* L) {
 		if (luaW_loadblock(L, __FILE__, __LINE__, "\n\
 			print('#define WTK_PACKED\\nconst char* luaW_packed[] = {') \n\
 			for i,file in ipairs({ ... }) do \n\
-				local package = file:gsub('/', '.'):gsub('.*wtk', 'wtk'):gsub('%.lua$', '')\n\
+				local package, cont = file:gsub('/', '.'):gsub('.*wtk', 'wtk'):gsub('%.lua$', '')\n\
+				local type = file:find('%.lua$') and 'lua' or 'file'\n\
 				io.stderr:write('Packing ' .. file .. ' (' .. package .. ')...\\n')\n\
-				local f, err = load(io.lines(file,'L'), '='..package)\n\
-				if not f then error('Error packing ' .. file .. ' (' .. package .. '): ' .. err) end\n\
-				cont = string.dump(f):gsub('.',function(c) return string.format('\\\\x%02X',string.byte(c)) end) \n\
-				print('\t\\\"'..file:gsub('/', '.'):gsub('.*wtk', 'wtk'):gsub('%.lua$', '') ..'\\\",\\\"'..cont..'\\\",(void*)'..math.floor(#cont/3)..',')\n\
+				cont = assert(io.open(file, 'rb'), 'Cannot find file ' .. file):read('*all')\n\
+				if type == 'lua' then cont = string.dump(assert(load(cont, '='..package))) end\n\
+				cont = cont:gsub('.',function(c) return string.format('\\\\x%02X',string.byte(c)) end) \n\
+				print('\t\\\"'..file:gsub('/', '.'):gsub('.*wtk', 'wtk'):gsub('%.lua$', '') ..'\\\",\\\"'..type..'\\\",\\\"'..cont..'\\\",(void*)'..math.floor(#cont/4)..',')\n\
 			end\n\
 			print(\"(void*)0, (void*)0, (void*)0\\n};\")")
 		) {
@@ -388,16 +758,24 @@ int luaopen_wtk_c(lua_State* L) {
 	#include <packed.lua.c>
 	int luaW_packlua(lua_State* L, const char* directory) {
 		#ifndef WTK_UNPACKED
+			lua_newtable(L);
+			lua_pushvalue(L, -1);
+			lua_setglobal(L, "packed");
 			lua_getfield(L, LUA_REGISTRYINDEX, LUA_PRELOAD_TABLE);
-			for (int i = 0; luaW_packed[i]; i += 3) {
+			for (int i = 0; luaW_packed[i]; i += 4) {
 				lua_pushstring(L, (strncmp(luaW_packed[i], directory, strlen(directory)) == 0) ? &luaW_packed[i][strlen(directory)+1] : luaW_packed[i]);
-				if (luaL_loadbuffer(L, luaW_packed[i+1], (size_t)luaW_packed[i+2], luaW_packed[i])) {
-					lua_pushfstring(L, "error loading %s: %s", luaW_packed[i], lua_tostring(L, -1));
-					return -1;
+				if (strcmp(luaW_packed[i+1], "lua") == 0)  {
+					if (luaL_loadbuffer(L, luaW_packed[i+2], (size_t)luaW_packed[i+3], luaW_packed[i])) {
+						lua_pushfstring(L, "error loading %s: %s", luaW_packed[i], lua_tostring(L, -1));
+						return -1;
+					}
+					lua_rawset(L, -3);
+				} else {
+					lua_pushlstring(L, luaW_packed[i+2], (size_t)luaW_packed[i+3]);
+					lua_rawset(L, -4);
 				}
-				lua_rawset(L, -3);
 			}
-			lua_pop(L, 1);
+			lua_pop(L, 2);
 		#else
 			#pragma message "Using unpacked lua modules."
 			lua_getglobal(L, "package");
@@ -417,9 +795,9 @@ int luaopen_wtk_c(lua_State* L) {
 #define luaW_loadentry(L, init) luaW_loadblock(L, "luaW_loadentry", 1, "(package.preload." init " or assert(loadfile(assert(package.searchpath(\"" init "\", package.path)))))(...)")
 
 int luaW_run(lua_State* L, int argc, char* argv[]) {
-  for (int i = 1; i < argc; ++i) 
-    lua_pushstring(L, argv[i]);
-  return lua_pcall(L, argc - 1, LUA_MULTRET, 0);
+	for (int i = 1; i < argc; ++i) 
+		lua_pushstring(L, argv[i]);
+	return lua_pcall(L, argc - 1, LUA_MULTRET, 0);
 }
 
 #define MAX_LUAWLS 1024
@@ -432,35 +810,36 @@ static void luaW_exitsignal(int sig) {
 			luaWLs[i] = NULL;
 			lua_close(L);
 		}
-  }
-  exit(0);
+	}
+	exit(0);
 }
 
 static int luaW_signalgc(lua_State* L){
 	for (int i = 0; i < MAX_LUAWLS; ++i) {
 		if (luaWLs[i] == L)
 			luaWLs[i] = NULL;
-  }
-  return 0;
+	}
+	return 0;
 }
 
 int luaW_signal(lua_State* L) {
 	int i = 0;
-  for (i = 0; i < MAX_LUAWLS && luaWLs[i]; ++i);
-  if (i == MAX_LUAWLS) {
+	for (i = 0; i < MAX_LUAWLS && luaWLs[i]; ++i);
+	if (i == MAX_LUAWLS) {
 		lua_pushstring(L, "error signaling lua: too many luas");
 		return -1;
 	}
 	luaWLs[i] = L;
-  signal(SIGINT, luaW_exitsignal);
-  signal(SIGTERM, luaW_exitsignal);
-  lua_newtable(L);
-  lua_newtable(L);
-  lua_pushcfunction(L, luaW_signalgc);
-  lua_setfield(L, -2, "__gc");
-  lua_setmetatable(L, -2);
-  luaL_ref(L, LUA_REGISTRYINDEX);
-  return 0;
+	signal(SIGINT, luaW_exitsignal);
+	signal(SIGTERM, luaW_exitsignal);
+	signal(SIGPIPE, SIG_IGN);
+	lua_newtable(L);
+	lua_newtable(L);
+	lua_pushcfunction(L, luaW_signalgc);
+	lua_setfield(L, -2, "__gc");
+	lua_setmetatable(L, -2);
+	luaL_ref(L, LUA_REGISTRYINDEX);
+	return 0;
 }
 
 #define luaW_requiref(L, module, func) int func(lua_State* L); luaL_requiref(L, module, func, 0), lua_pop(L, 1);
