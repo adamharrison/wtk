@@ -59,7 +59,7 @@ end
 
 function xml.tag(tag, props) return setmetatable({ tag = tag, props = props, children = { }, nodes = { } }, xml.tmt) end
 function xml.comment(comment) return setmetatable({ comment = comment }, xml.cmt) end
-function xml.prolog(version, encoding) return setmetatable({ version = version, encoding = encoding }, xml.pmt) end
+function xml.prolog(version, encoding, directives) return setmetatable({ version = version, encoding = encoding, directives = {} }, xml.pmt) end
 function xml.doctype(definition) return setmetatable({ definition = definition }, xml.dtmt) end
 function xml.document(prolog, doctype) return setmetatable({ prolog = prolog, doctype = doctype, children = {}, nodes = {} }, xml.dmt) end
 
@@ -82,9 +82,16 @@ function xml.parse(text, options)
     local vs, ve = p:find("version%s*=%s*")
     local _, version = find_end_of_string(p, ve + 1)
     local vs, ve = p:find("encoding%s*=%s*")
-    local _, encoding = find_end_of_string(p, ve + 1)
-    prolog = xml.prolog(version, encoding)
+    local _, encoding = ve and find_end_of_string(p, ve + 1)
     offset = e + 1
+    local directives = {}
+    while true do
+      local ds,de,dp = text:find("^%s*<%s*%?%s*xml([^>]+)%?>", offset)
+      if not ds then break end
+      table.insert(directives, dp)
+      offset = de + 1
+    end
+    prolog = xml.prolog(version, encoding, directives)
   end
   s,e,dt = text:find("^%s*<%s*%![dD][oO][cC][tT][yY][pP][eE]%s*([^>]+)>", offset)
   if e then 
@@ -108,7 +115,7 @@ function xml.parse(text, options)
       open_comment = false
       goto continue
     else
-      local s,e = text:find("%s*<!%-%-%s*", offset)
+      local s,e = text:find("^%s*<!%-%-%s*", offset)
       if s then
         open_comment = e + 1
         offset = e + 1
@@ -117,7 +124,7 @@ function xml.parse(text, options)
     end
     if #tags > 0 and not open_tag then
       if halt_tags[tags[#tags].tag] then
-        local s,e = text:find("<%s*/%s*" .. tags[#tags].tag .. "%s*>", offset)
+        local s,e = text:find("^<%s*/%s*" .. tags[#tags].tag .. "%s*>", offset)
         assert(s, "cannot find closing tag for " .. tags[#tags].tag)
         local subtext = text:sub(offset, s - 1)
         table.insert(tags[#tags].children, subtext)
@@ -142,7 +149,7 @@ function xml.parse(text, options)
       end
     end
     if open_tag then
-      local s, e, autoclose = text:find("^%s*(/?)%s*>", offset)
+      local s, e, autoclose = text:find("^%s*([/]?)%s*>", offset)
       if s and #autoclose == 0 and autoclose_tags[tags[#tags].tag] then
         autoclose = "/"
       end
@@ -181,7 +188,7 @@ function xml.parse(text, options)
         table.insert(tags[#tags].nodes, content);
         offset = e + 1
       else
-        local s, e, tag = text:find("^<%s*([^%s>/]+)", offset)
+        s, e, tag = text:find("^<%s*([^%s>/]+)", offset)
         if s then 
           table.insert(tags, xml.tag(tag, {}))
           tags[#tags].parent = tags[#tags - 1]
