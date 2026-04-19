@@ -292,20 +292,31 @@ static int f_server_socket_accept(lua_State* L) {
 }
 
 static int f_server_socket_peer(lua_State* L) {
+	char own_addr[server_imax(sizeof(struct sockaddr_in), sizeof(struct sockaddr_un))];
 	char peer_addr[server_imax(sizeof(struct sockaddr_in), sizeof(struct sockaddr_un))];
   socklen_t peer_addr_len = sizeof(peer_addr);
   server_socket_t* sock = luaL_checkudata(L, 1, "wtk.server.c.socket");
-  if (getsockname(sock->fd, (struct sockaddr*)&peer_addr, &peer_addr_len))
-		return luaL_error(L, "error retrieving address: %s", strerror(errno));
-  if (((struct sockaddr*)peer_addr)->sa_family == AF_INET) {
+  if (getsockname(sock->fd, (struct sockaddr*)&own_addr, &peer_addr_len))
+		return luaL_error(L, "error retrieving own address: %s", strerror(errno));
+  if (((struct sockaddr*)own_addr)->sa_family == AF_INET) {
 		lua_pushliteral(L, "inet");
-		lua_pushstring(L, inet_ntoa(((struct sockaddr_in*)peer_addr)->sin_addr));
-		lua_pushinteger(L, ntohs(((struct sockaddr_in*)peer_addr)->sin_port));
-		return 3;
-	} else if (((struct sockaddr*)peer_addr)->sa_family == AF_UNIX) {
+		lua_pushstring(L, inet_ntoa(((struct sockaddr_in*)own_addr)->sin_addr));
+		
+		lua_pushinteger(L, ntohs(((struct sockaddr_in*)own_addr)->sin_port));
+		if (!getpeername(sock->fd, (struct sockaddr*)&peer_addr, &peer_addr_len))
+			lua_pushstring(L, inet_ntoa(((struct sockaddr_in*)peer_addr)->sin_addr));
+		else
+			lua_pushnil(L);
+		return 4;
+	} else if (((struct sockaddr*)own_addr)->sa_family == AF_UNIX) {
 		lua_pushliteral(L, "unix");
-		lua_pushstring(L, ((struct sockaddr_un*)peer_addr)->sun_path);
-		return 2;
+		lua_pushnil(L);
+		lua_pushstring(L, ((struct sockaddr_un*)own_addr)->sun_path);
+		if (!getpeername(sock->fd, (struct sockaddr*)&peer_addr, &peer_addr_len))
+			lua_pushstring(L, inet_ntoa(((struct sockaddr_in*)peer_addr)->sin_addr));
+		else
+			lua_pushnil(L);
+		return 4;
 	}
 	return 0;
 }

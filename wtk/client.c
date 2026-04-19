@@ -11715,6 +11715,7 @@ int luaopen_wtk_client_c(lua_State* L) {
       local _, _, protocol, hostname, port, url = url:find('^(%w+)://([^/:]+):?(%d*)(.*)$')\n\
       return protocol, hostname, (not port or port == '') and (protocol == 'https' and 443 or 80) or tonumber(port), (port and port ~= '') and port or nil, (not url or url == '' and '/' or url)\n\
     end\n\
+    function socket.escapeURI(param) return param:gsub(\"[^A-Za-z0-9%-_%.%!~%*'%(%)]\", function(e) return string.format('%%%02x', e:byte(1)) end) end\n\
     \n\
     function socket:read(bytes, blocking, exact)\n\
       if bytes == '*l' then\n\
