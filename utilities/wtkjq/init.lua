@@ -110,6 +110,16 @@ local wtkjq_functions = {
       return table.unpack(lengths)
     end
   },
+  match = {
+    args = { "match", "..." },
+    func = function(value, ...)
+      local results = {}
+      for _, a in ipairs({ ... }) do
+        table.insert(results, a:match(value))
+      end
+      return table.unpack(results)
+    end
+  },
   delete = {
     args = { "fucntion", "..." },
     func = function(key, ...)
@@ -128,9 +138,8 @@ local wtkjq_functions = {
   sort = {
     args = { "function", "..." }, 
     func = function(callback_function, ...)
-      table.sort(callback_function, ...)
-      for _, a in { ... } do
-        table.sort(callback_function, a)
+      for _, a in ipairs({ ... }) do
+        table.sort(a, callback_function)
       end
       return ...
     end
