@@ -69,12 +69,13 @@ end
 Server.Response = { }
 Server.Response.__index = Server.Response
 function Server.Response.new(code, headers, body) return setmetatable({ code = code, headers = headers or {}, body = body }, Server.Response) end
+function Server.Response:set_headers(headers) self.headers = merge(self.headers, headers) return self end
 function Server.Response:write_header(client)
   if client.closed then return end
   local parts = { string.format("%s %d %s\r\n", "HTTP/1.1", self.code, client.server.codes[self.code]) }
   if self.body and type(self.body) == 'string' and not self.headers['content-length'] and self.headers['transfer-encoding'] ~= 'chunked' then self.headers['content-length'] = #self.body end
-  if not self.headers['connection'] or self.headers['connection']:find("^%s*%") then self.headers['connection'] = 'keep-alive' end
-  if not self.headers['date'] or self.headers['date']:find("^%s*%") then self.headers['date'] = os.date("!%a, %d %b %Y %H:%M:%S GMT") end
+  if not self.headers['connection'] or self.headers['connection']:find("^%s*$") then self.headers['connection'] = 'keep-alive' end
+  if not self.headers['date'] or self.headers['date']:find("^%s*$") then self.headers['date'] = os.date("!%a, %d %b %Y %H:%M:%S GMT") end
   for key,value in pairs(self.headers) do table.insert(parts, string.format("%s: %s\r\n", key, value)) end
   table.insert(parts, "\r\n")
   client:write_block(table.concat(parts))
@@ -191,13 +192,13 @@ function Request:read(len)
   return str 
 end
 function Request:respond(code, headers, body) 
-  self.responded = true 
   if headers and not headers['set-cookie'] and self.cookies then 
     local cookies = {}
     for key,value in pairs(self.cookies) do table.insert(cookies, key .. "=" .. tostring(value):gsub("[%c:/?#%[%]@!$&'\"%(%)*+,;=%%]", function(e) return "%" .. string.format("%02x", e:byte(1)) end)) end
     if #cookies > 0 then headers['set-cookie'] = table.concat(cookies, ';') end
   end
   local res = (type(code) == 'table' and getmetatable(code) == Server.Response and code or Server.Response.new(code, headers, body))
+  self.responded = true 
   res:write(self.client)
   return res
 end
@@ -331,6 +332,7 @@ function Server.new(t)
   t.mimes = { ["svg"] = "image/svg+xml", ["jpeg"] = "image/jpeg", ["jpg"] = "image/jpeg", ["png"] = "image/png", ["gif"] = "image/gif", ["js"] = "text/javascript", ["html"] = "text/html", ["css"] = "text/css", ["txt"] = "text/plain" }
   t.codes = { [101] = "Switching Protocols", [200] = "OK", [201] = "Created", [204] = "No Content", [206] = "Partial Content", [301] = "Moved Permanently", [302] = "Found", [400] = "Bad Request", [403] = "Forbidden", [404] = "Not Found", [500] = "Internal Server Error" }
   t.routes = { GET = { }, POST = { }, PUT = { }, DELETE = { } }
+  t.templates = {}
   local self = setmetatable(t, Server) 
   self.log = t.log or Server.Log.new(t.verbose)
   local type, address, port, peer = self.socket:peer()
@@ -352,7 +354,7 @@ function Server:default_error_handler(request, err, client, meta)
     msg = string.format("Unhandled Error: %s", err) 
     if request and not request.responded then request:respond(500, { ["Content-Type"] = "text/plain; charset=UTF-8" }, "500 Internal Server Error") end
   end
-  if self.verbose or not err.verbose then self.log:error((self.verbose and (self.very_verbose or code == 500)) and (msg .. "\n" .. meta.stack) or msg) end
+  if self.verbose or not err.verbose then self.log:error("%s", (self.verbose and (self.very_verbose or code == 500)) and (msg .. "\n" .. meta.stack) or msg) end
   if not request then client:close() end
   if request and request.client.websocket then request.client.websocket:close() end
 end
@@ -369,8 +371,11 @@ function Server:accept()
         try(function()
           request = Request.new(client):parse_headers()
           if request then
-            self:accepted(client, request)
-            if not request.responded then error({ code = 404 }) end
+            local res = { self:accepted(client, request) }
+            if not request.responded then 
+              assert(#res > 0, { code = 404 })
+              request:respond(table.unpack(res)) 
+            end
           end
         end, function(err)
           try(function()
@@ -397,7 +402,7 @@ function Server:add(loop)
 end
 function Server:stop(loop) self.loop:remove(self.socket) end
 function Server:accepted(client, request)
-  (self.handler or self.default_handler)(self, request)
+  return (self.handler or self.default_handler)(self, request)
 end
 function Server:mimetype(file)
   local extension = file:match("%.(%w+)$")
@@ -409,7 +414,7 @@ function Server:default_handler(request)
     local results = { request.path:match(route.path) }
     if results and #results > 0 then
       for i,v in ipairs(results) do if v == "" then results[i] = false end end
-      return true, route.handler(request, table.unpack(results))
+      return route.handler(request, table.unpack(results))
     end
   end
   return false
@@ -452,6 +457,39 @@ function Server.Log:verbose(message, ...) if self._verbose then self:log("VERB",
 function Server.Log:info(message, ...) self:log("INFO", message, ...) end
 function Server.Log:error(message, ...) self:log("ERROR", message, ...) end
 function Server.Log:warn(message, ...) self:log("WARN", message, ...) end
+
+Server.Template = {}
+Server.Template.__index = Server.Template
+function Server.Request:template(path, variables)  local t = self.client.server.templates[path] if not t or self.client.server.debug then t = Server.Template.parse(assert(io.open(path), { code = 404 }):read("*all"), path) self.client.server.templates[path] = t end local res = t:render(merge(params or {}, { request = self })) return self:respond(200, { ["Content-Type"] = "text/html; charset=UTF-8", ["Content-Length"] = #res }, res) end
+local function literal_escape(str) return 'table.insert(__contents, "' .. (str:match("^(%s+)") or ""):gsub("\n", "\\n") .. '" .. [=[' .. str:gsub("]=]", ']=] .. "]=]" .. [=[') .. ']=])' end
+function Server.Template:render(params) return self.__render(params) end
+function Server.Template.parse(str, name)
+  local constructs = {}
+  local offset, e = 1
+  while true do
+    local sc = str:find("{%%", offset)
+    local so = str:find("{{", offset)
+    if sc and (not so or sc < so) then
+      table.insert(constructs, literal_escape(str:sub(offset, sc - 1)))
+      e = assert(str:find("%%}", sc + 2), "can't find closing control block")
+      table.insert(constructs, str:sub(sc + 2, e - 1))
+    elseif so and (not sc or so < sc) then
+      table.insert(constructs, literal_escape(str:sub(offset, so - 1)))
+      e = assert(str:find("}}", so + 2), "can't find closing output block")
+      table.insert(constructs, "table.insert(__contents, tostring(" .. str:sub(so + 2, e - 1) .. "))")
+    else
+      break
+    end
+    offset = e + 2
+  end
+  table.insert(constructs, literal_escape(str:sub(offset)))
+  local t = setmetatable({ __params = {}, __builtins = { table = table, tostring = tostring } }, Server.Template)
+  local env = setmetatable({}, {  __index = function(_, k) return rawget(t.__builtins, k) or t.__params[k] end, __newindex = function(_, k, v) t.__params[k] = v end })
+  local template_contents = "return function(params) local __contents = {} " .. table.concat(constructs) .. " return table.concat(__contents) end"
+  print(template_contents)
+  t.__render = assert(load(template_contents, "=" .. (name or "unknown template"), "bt", env))()
+  return t
+end
 
 function Server:hot_reload(loop, file, options)
   if not system.mtime(file) then return self.log:warn("Can't find " .. file .. ", so cannot hot reload.") end
