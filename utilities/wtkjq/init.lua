@@ -121,7 +121,7 @@ local wtkjq_functions = {
     end
   },
   delete = {
-    args = { "fucntion", "..." },
+    args = { "function", "..." },
     func = function(key, ...)
       for _, a in pairs({ ... }) do
         if is_array(a) then
@@ -163,6 +163,41 @@ local wtkjq_functions = {
           if callback_function(a, 1) then 
             table.insert(t, a) 
           end
+        end
+      end
+      return table.unpack(t)
+    end
+  },
+  contains = {
+    args = { "value", "..." },
+    func = function(str, ...)
+      local function contains_function(obj)
+        if is_array(obj) then
+          for i, v in ipairs(obj) do
+            if contains_function(v) then return true end
+          end
+          return false
+        elseif type(obj) == 'table' then
+          for k, v in pairs(obj) do
+            if contains_function(k) or contains_function(v) then return true end
+          end
+          return false
+        elseif type(obj) == 'string' then
+          if obj:find(str) then return true end
+          return false
+        end
+        return false
+      end
+      local t = {}
+      for _, a in ipairs({ ... }) do
+        if is_array(a) then
+          local r = {}
+          for i, v in ipairs(a) do
+            table.insert(r, contains_function(v))
+          end
+          table.insert(t, r)
+        else
+          table.insert(t, contains_function(a))
         end
       end
       return table.unpack(t)
