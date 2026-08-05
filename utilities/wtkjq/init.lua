@@ -407,6 +407,7 @@ local function translate_function(str, wrap)
     local si = str:find("%S") or 1
     i = si
     local final_function = nil
+    local has_space = true
     while i <= #str do
       if str:sub(i, i) == "." then
         local ns, ne, word, mod = str:find("^([%w_]*)(%(?)", i + 1)
@@ -418,12 +419,19 @@ local function translate_function(str, wrap)
             i = lambda_end + 1
           elseif word then
             if #word > 0 then
-              final_function = "deref(" .. json.encode(word) .. ", " .. (final_function or "a") .. ")"
+              if not has_space and final_function then
+                final_function = "deref(" .. json.encode(word) .. ", " .. (final_function or "a") .. ")"
+              elseif final_function then
+                final_function = final_function .. " deref(" .. json.encode(word) .. ", a)"
+              else
+                final_function = "deref(" .. json.encode(word) .. ", a)"
+              end
             else
               final_function = final_function or "a"
             end
             i = ne + 1
           end
+          has_space = false
         end
       elseif str:sub(i, i) == ":" then
         local ns, ne, word = str:find("(%w+)%(", i + 1)
@@ -465,6 +473,9 @@ local function translate_function(str, wrap)
         end
         i = square_end + 1
       else
+        if str:sub(i, i) == " " then
+          has_space = true
+        end
         final_function = (final_function or "") .. str:sub(i,i)
         i = i + 1
       end
@@ -741,7 +752,9 @@ local function print_value(value)
 end
 
 xpcall(function() 
-  local filter_function = assert(load(target))()
+  local chunk, err = load(target, "=filter_function")
+  if not chunk then error("error parsing filter function [[" .. target .. "]]: " .. err) end
+  local filter_function = chunk()
   local t = {}
   if args.slurp then
     for line in io.stdin:lines() do
