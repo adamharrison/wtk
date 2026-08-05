@@ -65,6 +65,11 @@ local function is_array(a)
   return type(a) == 'table' and (#a > 0 or (next(a) == nil and a ~= json.empty_object))
 end
 
+local function nillify(a)
+  if a ~= nil then return a end
+  return a
+end
+
 local wtkjq_functions = {
   map = {
     args = { "function", "..." },
@@ -73,12 +78,14 @@ local wtkjq_functions = {
       for _, a in ipairs({ ... }) do
         if is_array(a) then
           local r = {}
-          for i, v in ipairs(a) do
-            table.insert(r, callback_function(v))
+          for i, v in ipairs(a) do  
+            local c = callback_function(v)
+            if c ~= nil then table.insert(r, c) end
           end
           table.insert(t, r)
         else
-          table.insert(t, callback_function(a))
+          local c = callback_function(a)
+          if c ~= nil then table.insert(t, c) end
         end
       end
       return table.unpack(t)
@@ -107,6 +114,7 @@ local wtkjq_functions = {
       for _, a in ipairs({ ... }) do
         table.insert(lengths, #a)
       end
+      if #lengths == 0 then return 0 end
       return table.unpack(lengths)
     end
   },
@@ -121,14 +129,15 @@ local wtkjq_functions = {
     end
   },
   delete = {
-    args = { "function", "..." },
+    args = { "value", "..." },
     func = function(key, ...)
-      for _, a in pairs({ ... }) do
+      for _, a in ipairs({ ... }) do
         if is_array(a) then
           for i, v in ipairs(a) do
             v[key] = nil
           end
         else
+          print("KEY", key)
           a[key] = nil
         end
       end
@@ -183,7 +192,7 @@ local wtkjq_functions = {
           end
           return false
         elseif type(obj) == 'string' then
-          if obj:find(str) then return true end
+          if obj:find(str, 1, true) then return true end
           return false
         end
         return false
