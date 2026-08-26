@@ -167,8 +167,22 @@ local wtkjq_functions = {
             v[key] = nil
           end
         else
-          print("KEY", key)
           a[key] = nil
+        end
+      end
+      return ...
+    end
+  },
+  set = {
+    args = { "value", "value", "..." },
+    func = function(key, value, ...)
+      for _, a in ipairs({ ... }) do
+        if is_array(a) then
+          for i, v in ipairs(a) do
+            v[key] = value
+          end
+        else
+          a[key] = value
         end
       end
       return ...
@@ -283,8 +297,10 @@ local wtkjq_functions = {
       end
       return t
     end
-  }
+  },
+  empty_object = { func = function() return json.empty_object end }
 }
+wtkjq_functions.del = wtkjq_functions.delete
 wtkjq_functions.grep = wtkjq_functions.select
 wtkjq_functions.filter = wtkjq_functions.select
 
@@ -343,7 +359,7 @@ function deref(key, ...)
   for i, a in ipairs({ ... }) do
     if a == nil then return json.null end
     if is_array(a) then
-      assert(not args.strict, "can't dereference array")
+      assert(not args.strict, "can't dereference array")  
       local r = {}
       for _, v in ipairs(a) do
         table.insert(r, deref(key, v))
@@ -374,6 +390,7 @@ local function find_next(str, offset, chr)
   local open_quote = false
   local open_square_bracket = 0
   local open_parentheses = 0
+  local open_hash = 0
   while offset <= #str do
     if open_quote then
       if str:sub(offset,offset) == open_quote then
@@ -389,8 +406,12 @@ local function find_next(str, offset, chr)
       open_square_bracket = open_square_bracket + 1
     elseif str:sub(offset, offset) == "]" then
       open_square_bracket = open_square_bracket - 1
+    elseif str:sub(offset, offset) == "{" then
+      open_hash = open_hash + 1
+    elseif str:sub(offset, offset) == "}" then
+      open_hash = open_hash - 1
     end
-    if open_square_bracket == 0 and not open_quote and open_parentheses == 0 then
+    if open_square_bracket == 0 and not open_quote and open_parentheses == 0 and open_hash == 0 then
       local s, e = str:find("^" .. chr, offset)
       if s then
         return offset, e
@@ -428,6 +449,11 @@ local function translate_range(str)
   else
     return str
   end
+end
+
+local function translate_value(v)
+  if v:find("^{%s*}$") then return "call('empty_object')" end
+  return v
 end
 
 local function translate_function(str, wrap)
@@ -469,6 +495,17 @@ local function translate_function(str, wrap)
           end
           has_space = false
         end
+        
+      elseif str:sub(i, i) == "{" then
+        local object_end = assert(find_next(str, i, "%}"), "can't find the end of object")
+        local keys = {}
+        for i, arg in ipairs(contextual_split(str:sub(i + 1, object_end - 1), "%s*,%s*")) do
+          local parts = contextual_split(arg, "%s*:%s*")
+          assert(#parts == 2, "can't parse keys from object: ", arg)
+          table.insert(keys, "[" .. parts[1] .. "] = " .. translate_function(parts[2]))
+        end
+        final_function = "{" .. table.concat(keys, ", ") .. "}"
+        i = object_end + 1
       elseif str:sub(i, i) == ":" then
         local ns, ne, word = str:find("(%w+)%(", i + 1)
         local lambda_end = assert(find_next(str, ne, "%)"), "can't find the end of function '" .. word .. "'")
@@ -481,7 +518,7 @@ local function translate_function(str, wrap)
               assert(#arg > 0, "requires a callback body for '" .. word .. "'")
               table.insert(t, translate_function(arg, true))
             else
-              table.insert(t, arg)
+              table.insert(t, translate_value(arg))
             end
           end
           final_function = "call(\"" .. word .. "\", " .. table.concat(t, ", ") .. "," .. (final_function or "a") .. ")"
@@ -498,6 +535,7 @@ local function translate_function(str, wrap)
           for i,v in ipairs(elements) do
             table.insert(parts, translate_function(v))
           end
+          
           final_function = "{" .. table.concat(parts, ", ") .. "}"
         else
           local range_contents = str:sub(i + 1, square_end - 1)
