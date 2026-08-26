@@ -60,6 +60,36 @@ The following strings should be translated int he following actions
 
 ]]
 
+local args = wtk.pargs({ ... }, { 
+  compress = "flag", 
+  help = "flag",
+  debug = "flag",
+  slurp = "flag",
+  tabs = "flag",
+  indent = "number",
+  unbuffered = "flag",
+  version = "flag",
+  strict = "flag",
+  ["from-file"] = "string",
+  ["sort-keys"] = "flag",
+  ["monochrome-output"] = "flag",
+  ["colorize-output"] = "flag",
+  ["raw-input"] = "flag",
+  ["raw-output"] = "flag",
+  ["raw-output0"] = "flag",
+  ["join-output"] = "flag"
+}, {
+  c = "compress",
+  S = "sort-keys", 
+  s = "slurp",
+  h = "help",
+  t = "strict",
+  f = "from-file",
+  r = "raw-output",
+  M = "monochrome-output",
+  C = "colorize-output",
+  V = "version"
+})
 
 local function is_array(a)
   return type(a) == 'table' and (#a > 0 or (next(a) == nil and a ~= json.empty_object))
@@ -67,7 +97,7 @@ end
 
 local function nillify(a)
   if a ~= nil then return a end
-  return a
+  return json.null
 end
 
 local wtkjq_functions = {
@@ -85,7 +115,7 @@ local wtkjq_functions = {
           table.insert(t, r)
         else
           local c = callback_function(a)
-          if c ~= nil then table.insert(t, c) end
+          if c ~= nil then table.insert(t, c) else table.insert(t, json.null) end
         end
       end
       return table.unpack(t)
@@ -283,7 +313,12 @@ function splat(range, ...)
       if range < 0 then range = #a + range end
       result[#result + 1] = a[range + 1]
     else
-      table.move(a, 1, #a, #result + 1, result)
+      if type(a) == 'table' and is_array(a) then
+        table.move(a, 1, #a, #result + 1, result)
+      else
+        assert(not args.strict, "can't splat non-array")
+        table.insert(result, a)
+      end
     end
   end
   return table.unpack(result)
@@ -306,15 +341,16 @@ end
 function deref(key, ...)  
   local t = {}
   for i, a in ipairs({ ... }) do
-    if not a then return nil end
+    if a == nil then return json.null end
     if is_array(a) then
+      assert(not args.strict, "can't dereference array")
       local r = {}
       for _, v in ipairs(a) do
         table.insert(r, deref(key, v))
       end
       table.insert(t, r)
     else
-      table.insert(t, a[key])
+      table.insert(t, nillify(a[key]))
     end
   end
   return table.unpack(t)
@@ -488,34 +524,6 @@ local function translate_function(str, wrap)
 end
 
 
-local args = wtk.pargs({ ... }, { 
-  compress = "flag", 
-  help = "flag",
-  debug = "flag",
-  slurp = "flag",
-  tabs = "flag",
-  indent = "number",
-  unbuffered = "flag",
-  version = "flag",
-  ["from-file"] = "string",
-  ["sort-keys"] = "flag",
-  ["monochrome-output"] = "flag",
-  ["colorize-output"] = "flag",
-  ["raw-input"] = "flag",
-  ["raw-output"] = "flag",
-  ["raw-output0"] = "flag",
-  ["join-output"] = "flag"
-}, {
-  c = "compress",
-  S = "sort-keys", 
-  s = "slurp",
-  h = "help",
-  f = "from-file",
-  r = "raw-output",
-  M = "monochrome-output",
-  C = "colorize-output",
-  V = "version"
-})
 local filter = (args[1] or '.')
 if args["from-file"] then filter = assert(io.open(args["from-file"], "rb")):read("*all") end
 local target = "return function(a) return " .. translate_function(filter) .. " end"
@@ -552,6 +560,8 @@ The following options are available:
       --indent n            use n spaces for indentation
       --unbuffered          flush output stream after each output
   -f, --from-file file      load filter from the file
+  -t, --strict              operate in strict mode, and throw errors
+                            instead of attempting to DWIM parse
   -V, --version             show the version
   -h, --help                show the help
 ]])
