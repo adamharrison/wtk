@@ -221,6 +221,31 @@ local wtkjq_functions = {
       return table.unpack(t)
     end
   },
+  ["in"] = {
+    args = { "function", "..." },
+    func = function(list_func, ...)
+      local list = list_func()
+      local function is_in_list(value)
+        for i, v in ipairs(list) do
+          if v == value then return true end
+        end
+        return false
+      end
+      local t = {}
+      for _, a in ipairs({ ... }) do
+        if is_array(a) then
+          local r = {}
+          for i, v in ipairs(a) do
+            table.insert(r, is_in_list(v))
+          end
+          table.insert(t, is_in_list(r))
+        else
+          table.insert(t, is_in_list(a))
+        end
+      end
+      return table.unpack(t)
+    end
+  },
   contains = {
     args = { "value", "..." },
     func = function(str, ...)
@@ -303,6 +328,8 @@ local wtkjq_functions = {
 wtkjq_functions.del = wtkjq_functions.delete
 wtkjq_functions.grep = wtkjq_functions.select
 wtkjq_functions.filter = wtkjq_functions.select
+
+function read(path) local f = assert(io.open(path, "rb")) local j = json.decode(f:read("*all")) f:close() return j end
 
 function splat(range, ...)
   local result = {}
@@ -497,6 +524,7 @@ local function translate_function(str, wrap)
         end
         
       elseif str:sub(i, i) == "{" then
+        assert(i == si, "unexpected start of object")
         local object_end = assert(find_next(str, i, "%}"), "can't find the end of object")
         local keys = {}
         for i, arg in ipairs(contextual_split(str:sub(i + 1, object_end - 1), "%s*,%s*")) do
