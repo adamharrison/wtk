@@ -414,7 +414,8 @@ function Server:default_handler(request)
     local results = { request.path:match(route.path) }
     if results and #results > 0 then
       for i,v in ipairs(results) do if v == "" then results[i] = false end end
-      return route.handler(request, table.unpack(results))
+      local res = { route.handler(request, table.unpack(results)) }
+      return true, table.unpack(res)
     end
   end
   return false
