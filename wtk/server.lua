@@ -229,7 +229,7 @@ function Request:file(path, headers)
     return chunk
   end) 
 end
-function Request:attachment(path, headers) return self:file(path, merge(headers or {}, { ["Content-Disposition"] = "attachment; filename=\"" .. path:gsub(".*/", ""):gsub("\"", "") .. "\"" })) end
+function Request:attachment(path, headers, filename) return self:file(path, merge(headers or {}, { ["Content-Disposition"] = "attachment; filename=\"" .. (filename or path:gsub(".*/", ""):gsub("\"", "")) .. "\"" })) end
 function Request:parts()
   local boundary = self.headers['content-type']:match("multipart/form-data;%s+boundary=(.+)$")
   if not boundary then return function() return nil end end
@@ -495,7 +495,7 @@ end
 function Server:hot_reload(loop, file, options)
   if not system.mtime(file) then return self.log:warn("Can't find " .. file .. ", so cannot hot reload.") end
   local old_modified = not package.preload.init and system.mtime(file) or 0
-  loop:add(wtk.countdown.new(0, 0.25), function()
+  loop:add(wtk.io.countdown(0, 0.25), function()
     if old_modified < system.mtime(file) then
       local status, err = pcall(function()
         for k,v in pairs(package.loaded) do if not k:find("%.c$") and not k:find("%.c%.") then package.loaded[k] = nil end end

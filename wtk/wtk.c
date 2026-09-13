@@ -467,6 +467,24 @@ int luaW_loadblock(lua_State* L, const char* name, int line, const char* str) {
 int luaopen_wtk_c(lua_State* L) {
 	lua_newtable(L);
 	luaW_newclass(L, system);
+	lua_getfield(L, -1, "system");
+	lua_pushliteral(L, "arch");
+	#if defined(__x86_64__) || defined(_M_X64)
+		lua_pushliteral(L, "x86_64");
+	#elif defined(i386) || defined(__i386__) || defined(__i386) || defined(_M_IX86)
+		lua_pushliteral(L, "x86");
+	#elif defined(__aarch64__) || defined(_M_ARM64)
+		lua_pushliteral(L, "aarch64");
+	#endif 
+	lua_rawset(L, -3);
+	lua_pushliteral(L, "platform");
+	#ifdef _WIN32
+		lua_pushliteral(L, "windows");
+	#else 
+		lua_pushliteral(L, "linux");
+	#endif
+	lua_rawset(L, -3);
+	lua_pop(L, 1);
 	#ifndef _WIN32
 		luaW_newclass(L, stream);
 		luaW_newclass(L, loop);
