@@ -205,9 +205,9 @@ static const luaL_Reg stream_lib[] = {
 
 		lua_newtable(L);
 		luaL_checktype(L, 3, LUA_TFUNCTION);
-		lua_pushvalue(L, 3);
+		lua_pushvalue(L, 3); // push callback
 		lua_rawseti(L, -2, 1);
-		lua_pushvalue(L, 2);
+		lua_pushvalue(L, 2); // push object
 		lua_rawseti(L, -2, 2);
 		int table = lua_gettop(L);
 
@@ -296,13 +296,12 @@ static const luaL_Reg stream_lib[] = {
 	
 	static int f_countdown_new(lua_State* L) {
 		double offset = luaL_checknumber(L, 1);
-		double recurring = luaL_optnumber(L, 2, 0);
 		int fd = timerfd_create(CLOCK_MONOTONIC, 0);
 		struct itimerspec new_value = {0};
 		new_value.it_value.tv_sec = (int)offset;
 		new_value.it_value.tv_nsec = (int)(fmod(offset, 1.0) * (1000000000.0));
-		new_value.it_interval.tv_sec = (int)recurring;
-		new_value.it_interval.tv_nsec = (int)(fmod(recurring, 1.0) * (1000000000.0));
+		new_value.it_interval.tv_sec = 0;
+		new_value.it_interval.tv_nsec = 0;
 		if (timerfd_settime(fd, 0, &new_value, NULL) == -1) {
 			lua_pushnil(L);
 			lua_pushfstring(L, "can't set timer: %s", strerror(errno));
@@ -431,6 +430,11 @@ static int f_system_isatty(lua_State* L){
 	return 1;
 }
 
+static int f_system_thread(lua_State* L) {
+	lua_pushthread(L);
+	return 1;
+}
+
 static const luaL_Reg io_lib[] = {
 	{ "pipe",      f_pipe_new       },
 	{ "file",      f_file_new       },
@@ -445,6 +449,7 @@ static const luaL_Reg system_lib[] = {
 	{ "realpath",  f_system_realpath},
 	{ "time",      f_system_time    },
 	{ "isatty",	  f_system_isatty  },
+	{ "thread", 	 f_system_thread  },
 	{ NULL,        NULL }
 };
 
@@ -514,7 +519,7 @@ int luaopen_wtk_c(lua_State* L) {
 				end\n\
 				job.waiting = waiting_obj and { obj = waiting_obj, type = waiting_type, edge = result.edge, result = result }\n\
 				if job.waiting then \n\
-					self:add(job.waiting.obj, function() self:job_step(job) end, job.waiting.type, job.waiting.edge)\n\
+					self:add(job.waiting.obj, function() if job.waiting.result.time then self:rm(result.fd) end self:job_step(job) end, job.waiting.type, job.waiting.edge)\n\
 				else\n\
 					self:add(function() self:job_step(job) end)\n\
 				end\n\

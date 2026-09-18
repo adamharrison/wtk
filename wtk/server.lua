@@ -130,7 +130,7 @@ function Request.new(client)
 end
 function Request:parse_form(form)
   local params = {}
-  for key,value in form:gmatch("([^=&%?]+)=([^&]+)") do 
+  for key,value in (form or self:body()):gmatch("([^=&%?]+)=([^&]+)") do 
     value = value:gsub("%%([a-fA-F0-9][a-fA-F0-9])", function(e) return string.char(tonumber(e, 16)) end) 
     if params[key] then 
       if type(params[key]) ~= 'table' then
@@ -158,6 +158,7 @@ function Request:parse_headers()
   self.method, self.path, self.version, headers, remainder = table.concat(self.buffer):match("^(%S+) (%S+) (%S+)\r\n(.-\r\n)\r\n(.*)$")
   self.params, self.path, self.search = {}, self.path:match("^([^?]+)(%??[^?]*)$")
   assert(self.method and self.path, "malformed request")
+  self.path = self.path:gsub("%%([a-fA-F0-9][a-fA-F0-9])", function(e) return string.char(tonumber(e, 16)) end)
   if self.search then self.params = self:parse_form(self.search) end
   for key,value in headers:gmatch("([^%:]+):%s*(.-)\r\n") do self.headers[key:lower()] = value end
   for key,value in (self.headers.cookie or ""):gmatch("([^=;%s]+)=([^;]+)") do self.cookies[key] = value:gsub("%%([a-fA-F0-9][a-fA-F0-9])", function(e) return string.char(tonumber(e, 16)) end) end
@@ -195,7 +196,7 @@ function Request:respond(code, headers, body)
   if headers and not headers['set-cookie'] and self.cookies then 
     local cookies = {}
     for key,value in pairs(self.cookies) do table.insert(cookies, key .. "=" .. tostring(value):gsub("[%c:/?#%[%]@!$&'\"%(%)*+,;=%%]", function(e) return "%" .. string.format("%02x", e:byte(1)) end)) end
-    if #cookies > 0 then headers['set-cookie'] = table.concat(cookies, ';') end
+    if #cookies > 0 then headers['set-cookie'] = table.concat(cookies, ';') .. "; Path=/" end
   end
   local res = (type(code) == 'table' and getmetatable(code) == Server.Response and code or Server.Response.new(code, headers, body))
   self.responded = true 
@@ -204,9 +205,9 @@ function Request:respond(code, headers, body)
 end
 function Request:redirect(path) return self:respond(302, { ["location"] = path }) end
 function Request:file(path, headers)
-  assert(not path:find("%.%."), "invalid path") 
+  assert(path and not path:find("%.%."), "invalid path") 
   if not wtk.system.stat(path) then
-    return self:respond(200, merge({ ['content-type'] = self.client.server:mimetype(path) }, headers or {}), assert(packed[path], { code = 404 }))
+    return self:respond(200, merge({ ['content-type'] = self.client.server:mimetype(path) }, headers or {}), assert(packed and packed[path], { code = 404 }))
   end
   local stat = assert(wtk.system.stat(path), { code = 404 })
   assert(stat.type == "file", { code = 404 })
@@ -373,7 +374,7 @@ function Server:accept()
           if request then
             local res = { self:accepted(client, request) }
             if not request.responded then 
-              assert(#res > 0, { code = 404 })
+              assert(#res > 0 and res[1], { code = 404, message = request.path })
               request:respond(table.unpack(res)) 
             end
           end
@@ -484,10 +485,10 @@ function Server.Template.parse(str, name)
     offset = e + 2
   end
   table.insert(constructs, literal_escape(str:sub(offset)))
-  local t = setmetatable({ __params = {}, __builtins = { table = table, tostring = tostring } }, Server.Template)
-  local env = setmetatable({}, {  __index = function(_, k) return rawget(t.__builtins, k) or t.__params[k] end, __newindex = function(_, k, v) t.__params[k] = v end })
-  local template_contents = "return function(params) local __contents = {} " .. table.concat(constructs) .. " return table.concat(__contents) end"
-  print(template_contents)
+  local t = setmetatable({ __contexts = {}, __builtins = { table = table, tostring = tostring, ipairs = ipairs, pairs = pairs, pcall = pcall, merge = merge, escape = function(str) return str:gsub("\"", "&quot;") end } }, Server.Template)
+  t.__builtins.set_context = function(value) t.__contexts[system.thread()] = value end
+  local env = setmetatable({ }, { __index = function(_, k) return rawget(t.__builtins, k) or t.__contexts[system.thread()][k] end, __newindex = function(_, k, v) t.__contexts[system.thread()][k] = v end })
+  local template_contents = "return function(params) set_context(merge({}, params))  local __contents = {} pcall(function() " .. table.concat(constructs) .. " end) set_context(nil) return table.concat(__contents) end"
   t.__render = assert(load(template_contents, "=" .. (name or "unknown template"), "bt", env))()
   return t
 end
@@ -495,16 +496,20 @@ end
 function Server:hot_reload(loop, file, options)
   if not system.mtime(file) then return self.log:warn("Can't find " .. file .. ", so cannot hot reload.") end
   local old_modified = not package.preload.init and system.mtime(file) or 0
-  loop:add(wtk.io.countdown(0, 0.25), function()
-    if old_modified < system.mtime(file) then
-      local status, err = pcall(function()
-        for k,v in pairs(package.loaded) do if not k:find("%.c$") and not k:find("%.c%.") then package.loaded[k] = nil end end
-        assert(load(wtk.file.open(file, "rb"):read("*all"), "=" .. file))()
-        self.log:info("Hot reloaded " ..  file .. ".")
-        collectgarbage()
-      end)
-      if not status then self.log:error("Attempt to reload routes failed: " .. err) end
-      old_modified = system.mtime(file)
+  loop:job(function()
+    while true do
+      coroutine.yield(0.25)
+      collectgarbage()
+      if old_modified < system.mtime(file) then
+        local status, err = pcall(function()
+          for k,v in pairs(package.loaded) do if not k:find("%.c$") and not k:find("%.c%.") then package.loaded[k] = nil end end
+          assert(load(wtk.io.file(file, "rb"):read("*all"), "=" .. file))()
+          self.log:info("Hot reloaded " ..  file .. ".")
+          collectgarbage()
+        end)
+        if not status then self.log:error("Attempt to reload routes failed: " .. err) end
+        old_modified = system.mtime(file)
+      end
     end
   end)
 end
