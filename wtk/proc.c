@@ -144,6 +144,7 @@ int luaopen_wtk_proc_c(lua_State* L) {
     lua_setfield(L, -2, "signals");
     if (luaW_loadblock(L, __FILE__, __LINE__, "\n\
     local proc, stream = ...\n\
+    local wtk = require 'wtk'\n\
     proc.__index = proc\n\
     proc.__stream = stream\n\
     local _kill = proc.kill\n\
@@ -154,12 +155,14 @@ int luaopen_wtk_proc_c(lua_State* L) {
         if not self:status() then self:kill('KILL') end\n\
         return self:join()\n\
     end\n\
-    function proc:join()\n\
-        while true do\n\
+    function proc:join(timeout)\n\
+        local start = wtk.system.time()\n\
+        while not timeout or (wtk.system.time() - start < timeout) do\n\
             local status = self:status(not coroutine.isyieldable())\n\
             if status then return status end\n\
-            self.stderr:yield()\n\
+            self.stderr:yield(timeout and (timeout - (wtk.system.time() - start)))\n\
         end\n\
+        return self:status(not coroutine.isyieldable())\n\
     end\n\
     function proc.new(prog, options)\n\
         if options and options.env then local t = {} for k,v in pairs(options.env) do table.insert(t, k .. '=' .. v) end options.env = t end\n\

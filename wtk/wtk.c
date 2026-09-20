@@ -206,9 +206,9 @@ static const luaL_Reg stream_lib[] = {
 
 		lua_newtable(L);
 		luaL_checktype(L, 3, LUA_TFUNCTION);
-		lua_pushvalue(L, 3);
+		lua_pushvalue(L, 3); // push callback
 		lua_rawseti(L, -2, 1);
-		lua_pushvalue(L, 2);
+		lua_pushvalue(L, 2); // push object
 		lua_rawseti(L, -2, 2);
 		int table = lua_gettop(L);
 
@@ -308,13 +308,12 @@ static const luaL_Reg stream_lib[] = {
 	
 	static int f_countdown_new(lua_State* L) {
 		double offset = luaL_checknumber(L, 1);
-		double recurring = luaL_optnumber(L, 2, 0);
 		int fd = timerfd_create(CLOCK_MONOTONIC, 0);
 		struct itimerspec new_value = {0};
 		new_value.it_value.tv_sec = (int)offset;
 		new_value.it_value.tv_nsec = (int)(fmod(offset, 1.0) * (1000000000.0));
-		new_value.it_interval.tv_sec = (int)recurring;
-		new_value.it_interval.tv_nsec = (int)(fmod(recurring, 1.0) * (1000000000.0));
+		new_value.it_interval.tv_sec = 0;
+		new_value.it_interval.tv_nsec = 0;
 		if (timerfd_settime(fd, 0, &new_value, NULL) == -1) {
 			lua_pushnil(L);
 			lua_pushfstring(L, "can't set timer: %s", strerror(errno));
@@ -448,6 +447,11 @@ static int f_system_sleep(lua_State* L) {
 	return 0;
 }
 
+static int f_system_thread(lua_State* L) {
+	lua_pushthread(L);
+	return 1;
+}
+
 static const luaL_Reg io_lib[] = {
 	{ "pipe",      f_pipe_new       },
 	{ "file",      f_file_new       },
@@ -463,6 +467,7 @@ static const luaL_Reg system_lib[] = {
 	{ "time",      f_system_time    },
 	{ "sleep",     f_system_sleep   },
 	{ "isatty",	  f_system_isatty  },
+	{ "thread", 	 f_system_thread  },
 	{ NULL,        NULL }
 };
 
@@ -485,6 +490,24 @@ int luaW_loadblock(lua_State* L, const char* name, int line, const char* str) {
 int luaopen_wtk_c(lua_State* L) {
 	lua_newtable(L);
 	luaW_newclass(L, system);
+	lua_getfield(L, -1, "system");
+	lua_pushliteral(L, "arch");
+	#if defined(__x86_64__) || defined(_M_X64)
+		lua_pushliteral(L, "x86_64");
+	#elif defined(i386) || defined(__i386__) || defined(__i386) || defined(_M_IX86)
+		lua_pushliteral(L, "x86");
+	#elif defined(__aarch64__) || defined(_M_ARM64)
+		lua_pushliteral(L, "aarch64");
+	#endif 
+	lua_rawset(L, -3);
+	lua_pushliteral(L, "platform");
+	#ifdef _WIN32
+		lua_pushliteral(L, "windows");
+	#else 
+		lua_pushliteral(L, "linux");
+	#endif
+	lua_rawset(L, -3);
+	lua_pop(L, 1);
 	#ifndef _WIN32
 		luaW_newclass(L, stream);
 		luaW_newclass(L, loop);
@@ -500,28 +523,39 @@ int luaopen_wtk_c(lua_State* L) {
 	wtk.Stream = wtk.stream\n\
 	wtk.Stream.__index = wtk.Stream\n\
 	function wtk.Loop:job_step(job)\n\
+		job.last_activity = wtk.system.time()\n
 		if coroutine.status(job.co) ~= 'dead' then\n\
-			local status, result = assert(coroutine.resume(job.co, job))\n\
+			local results = { select(2, assert(coroutine.resume(job.co, job))) }\n\
 			if coroutine.status(job.co) ~= 'dead' then\n\
-				if type(result) == 'number' then \n\
-					result = { time = wtk.io.countdown(result) } \n\
-					result.fd = result.time[0]\n\
+				local index = 0\n\
+				for _, result in ipairs(results) do\n\
+					if result then\n\
+						if type(result) == 'number' then \n\
+							result = { time = wtk.io.countdown(result) } \n\
+							result.fd = result.time[0]\n\
+						elseif result.socket then\n\
+							result.fd = result.socket\n\
+						end\n\
+						if not result.type then result.type = 'read' end\n\
+						if not job.waiting[index] or job.waiting[index].fd ~= result.fd or job.waiting[index].type ~= result.type then\n\
+							if job.waiting[index] then self:rm(job.waiting[index].fd) end\n\
+							job.waiting[index] = result\n\
+							self:add(result.fd, function() if result.time then self:rm(result.fd) end self:job_step(job) end, result.type, result.edge)\n\
+						end\n\
+						index = index + 1\n\
+					end\n\
 				end\n\
-				local waiting_obj, waiting_type = type(result) == 'table' and (result.socket or result.fd), type(result) == 'table' and result.type or 'read'\n\
-				if (not waiting_obj or not job.waiting) or (job.waiting.obj ~= waiting_obj) or (job.waiting_type ~= waiting_type) then\n\
-					if job.waiting then self:rm(job.waiting.obj) end\n\
-					job.waiting = nil\n\
+				for i = #job.waiting, index + 1, -1 do\n\
+					self:rm(job.waiting[i].fd)\n\
+					job.waiting[i] = nil\n\
 				end\n\
-				job.waiting = waiting_obj and { obj = waiting_obj, type = waiting_type, edge = result.edge, result = result }\n\
-				if job.waiting then \n\
-					self:add(job.waiting.obj, function() self:job_step(job) end, job.waiting.type, job.waiting.edge)\n\
-				else\n\
+				if index == 0 then\n\
 					self:add(function() self:job_step(job) end)\n\
 				end\n\
 			end\n\
 		end\n\
-		if coroutine.status(job.co) == 'dead' and job.waiting and job.waiting.obj then \n\
-			self:rm(job.waiting.obj)\n\
+		if coroutine.status(job.co) == 'dead' and #job.waiting > 0 then \n\
+			for i,v in ipairs(job.waiting) do self:rm(v.fd) end job.waiting {}\n\
 		end\n\
 		return job\n\
 	end\n\
@@ -541,7 +575,7 @@ int luaopen_wtk_c(lua_State* L) {
 	end\n\
 	function wtk.Stream:flush() return self end\n\
 	function wtk.Stream:print(chunk, ...) return self:write(string.format(chunk .. '\\n', ...)) end\n\
-	function wtk.Stream:yield() coroutine.yield({ fd = self[0] or self[1], type = self[0] and self[1] and 'both' or (self[0] and 'read' or 'write') }) end\n\
+	function wtk.Stream:yield(...) coroutine.yield({ fd = self[0] or self[1], type = self[0] and self[1] and 'both' or (self[0] and 'read' or 'write') }, ...) end\n\
 	function wtk.Stream:read(target, nonblocking)\n\
 			if not self.buffer then self.buffer = '' end\n\
 			local yieldable = coroutine.isyieldable()\n\
@@ -607,7 +641,7 @@ int luaopen_wtk_c(lua_State* L) {
 					return table.concat(chunks)\n\
 			end\n\
 	end\n\
-	function wtk.Loop:job(func) return self:job_step(wtk.Promise.new({ co = coroutine.create(function(job) try(function() job:resolve(func(job)) end, function(err) job:reject(err) end) end) })) end\n\
+	function wtk.Loop:job(func) return self:job_step(wtk.Promise.new({ kill = function(job) assert(coroutine.close(job.co)) self:job_step(job) job:reject('killed') end, running = function(j) return coroutine.status(j.co) ~= 'dead' end, waiting = {}, co = coroutine.create(function(job) try(function() job:resolve(func(job)) end, function(err) job:reject(err) end) end) })) end\n\
 	function wtk.Loop:await(t)\n\
 		if type(t) ~= 'table' or #t == 0 then t = { t } end\n\
 		local signal = wtk.io.pipe()\n\

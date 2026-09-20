@@ -130,7 +130,7 @@ function Request.new(client)
 end
 function Request:parse_form(form)
   local params = {}
-  for key,value in form:gmatch("([^=&%?]+)=([^&]+)") do 
+  for key,value in (form or self:body()):gmatch("([^=&%?]+)=([^&]+)") do 
     value = value:gsub("%%([a-fA-F0-9][a-fA-F0-9])", function(e) return string.char(tonumber(e, 16)) end) 
     if params[key] then 
       if type(params[key]) ~= 'table' then
@@ -158,6 +158,7 @@ function Request:parse_headers()
   self.method, self.path, self.version, headers, remainder = table.concat(self.buffer):match("^(%S+) (%S+) (%S+)\r\n(.-\r\n)\r\n(.*)$")
   self.params, self.path, self.search = {}, self.path:match("^([^?]+)(%??[^?]*)$")
   assert(self.method and self.path, "malformed request")
+  self.path = self.path:gsub("%%([a-fA-F0-9][a-fA-F0-9])", function(e) return string.char(tonumber(e, 16)) end)
   if self.search then self.params = self:parse_form(self.search) end
   for key,value in headers:gmatch("([^%:]+):%s*(.-)\r\n") do self.headers[key:lower()] = value end
   for key,value in (self.headers.cookie or ""):gmatch("([^=;%s]+)=([^;]+)") do self.cookies[key] = value:gsub("%%([a-fA-F0-9][a-fA-F0-9])", function(e) return string.char(tonumber(e, 16)) end) end
@@ -195,7 +196,7 @@ function Request:respond(code, headers, body)
   if headers and not headers['set-cookie'] and self.cookies then 
     local cookies = {}
     for key,value in pairs(self.cookies) do table.insert(cookies, key .. "=" .. tostring(value):gsub("[%c:/?#%[%]@!$&'\"%(%)*+,;=%%]", function(e) return "%" .. string.format("%02x", e:byte(1)) end)) end
-    if #cookies > 0 then headers['set-cookie'] = table.concat(cookies, ';') end
+    if #cookies > 0 then headers['set-cookie'] = table.concat(cookies, ';') .. "; Path=/" end
   end
   local res = (type(code) == 'table' and getmetatable(code) == Server.Response and code or Server.Response.new(code, headers, body))
   self.responded = true 
@@ -204,9 +205,9 @@ function Request:respond(code, headers, body)
 end
 function Request:redirect(path) return self:respond(302, { ["location"] = path }) end
 function Request:file(path, headers)
-  assert(not path:find("%.%."), "invalid path") 
+  assert(path and not path:find("%.%."), "invalid path") 
   if not wtk.system.stat(path) then
-    return self:respond(200, merge({ ['content-type'] = self.client.server:mimetype(path) }, headers or {}), assert(packed[path], { code = 404 }))
+    return self:respond(200, merge({ ['content-type'] = self.client.server:mimetype(path) }, headers or {}), assert(packed and packed[path], { code = 404 }))
   end
   local stat = assert(wtk.system.stat(path), { code = 404 })
   assert(stat.type == "file", { code = 404 })
@@ -229,7 +230,7 @@ function Request:file(path, headers)
     return chunk
   end) 
 end
-function Request:attachment(path, headers) return self:file(path, merge(headers or {}, { ["Content-Disposition"] = "attachment; filename=\"" .. path:gsub(".*/", ""):gsub("\"", "") .. "\"" })) end
+function Request:attachment(path, headers, filename) return self:file(path, merge(headers or {}, { ["Content-Disposition"] = "attachment; filename=\"" .. (filename or path:gsub(".*/", ""):gsub("\"", "")) .. "\"" })) end
 function Request:parts()
   local boundary = self.headers['content-type']:match("multipart/form-data;%s+boundary=(.+)$")
   if not boundary then return function() return nil end end
@@ -328,13 +329,15 @@ function Client:close() self.server.log:verbose("Manually closing connnection.")
 function Client:yield(type) coroutine.yield({ socket = self.socket, type = type or "read" }) end
 
 function Server.new(t) 
-  t.socket = assert(socket.bind(t.host or "0.0.0.0", t.port or (t.debug and 8080 or 80)), "unable to bind")
-  t.mimes = { ["svg"] = "image/svg+xml", ["jpeg"] = "image/jpeg", ["jpg"] = "image/jpeg", ["png"] = "image/png", ["gif"] = "image/gif", ["js"] = "text/javascript", ["html"] = "text/html", ["css"] = "text/css", ["txt"] = "text/plain" }
-  t.codes = { [101] = "Switching Protocols", [200] = "OK", [201] = "Created", [204] = "No Content", [206] = "Partial Content", [301] = "Moved Permanently", [302] = "Found", [400] = "Bad Request", [403] = "Forbidden", [404] = "Not Found", [500] = "Internal Server Error" }
-  t.routes = { GET = { }, POST = { }, PUT = { }, DELETE = { } }
-  t.templates = {}
-  local self = setmetatable(t, Server) 
-  self.log = t.log or Server.Log.new(t.verbose)
+  local self = setmetatable(merge({
+    socket = assert(socket.bind(t.host or "0.0.0.0", t.port or (t.debug and 8080 or 80)), "unable to bind")
+    mimes = { ["svg"] = "image/svg+xml", ["jpeg"] = "image/jpeg", ["jpg"] = "image/jpeg", ["png"] = "image/png", ["gif"] = "image/gif", ["js"] = "text/javascript", ["html"] = "text/html", ["css"] = "text/css", ["txt"] = "text/plain" }
+    codes = { [101] = "Switching Protocols", [200] = "OK", [201] = "Created", [204] = "No Content", [206] = "Partial Content", [301] = "Moved Permanently", [302] = "Found", [400] = "Bad Request", [403] = "Forbidden", [404] = "Not Found", [500] = "Internal Server Error" }
+    routes = { GET = { }, POST = { }, PUT = { }, DELETE = { } }
+    log = Server.Log.new(t.verbose),
+    templates = {},
+    max_simultaneous_connections = 10
+  }, t), Server)
   local type, address, port, peer = self.socket:peer()
   if type == "unix" then
     self.log:info("Server up at %s", address)
@@ -363,8 +366,10 @@ Server.error_handler = Server.default_error_handler
 function Server:accept()
   local socket = self.socket:accept()
   if socket then 
+    assert(self.max_simultaneous_connections < self.clients, "too many simultaneous connections")
     local client = Client.new(self, socket)
     self.log:verbose("Incoming connection from '%s'", select(4, socket:peer()))
+    self.clients = self.clients + 1
     client.job = self.loop:job(function()
       while not client.closed do
         local request
@@ -373,7 +378,7 @@ function Server:accept()
           if request then
             local res = { self:accepted(client, request) }
             if not request.responded then 
-              assert(#res > 0, { code = 404 })
+              assert(#res > 0 and res[1], { code = 404, message = request.path })
               request:respond(table.unpack(res)) 
             end
           end
@@ -386,6 +391,20 @@ function Server:accept()
         end)
         -- clear out buffer if it wasn't read
         if request then request:body() end
+      end
+    end):always(function()
+      self.clients = self.clients - 1
+    end)
+    -- if we have a timeout, add in another job to montior this one, and kill it if we exceed timeout
+    client.timeout_job = server.timeout and self.loop:job(function() 
+      while client.job:running() do
+        local time_until_timeout = server.timeout - (os.time() - client.last_activity)
+        if time_until_timeout <= 0 then
+          self.log:error("Killing inactive request; exceeded timeout.")
+          client.job:kill()
+        else
+          coroutine.yield(time_until_timeout)
+        end
       end
     end)
     return client
@@ -414,7 +433,8 @@ function Server:default_handler(request)
     local results = { request.path:match(route.path) }
     if results and #results > 0 then
       for i,v in ipairs(results) do if v == "" then results[i] = false end end
-      return route.handler(request, table.unpack(results))
+      local res = { route.handler(request, table.unpack(results)) }
+      return true, table.unpack(res)
     end
   end
   return false
@@ -483,10 +503,10 @@ function Server.Template.parse(str, name)
     offset = e + 2
   end
   table.insert(constructs, literal_escape(str:sub(offset)))
-  local t = setmetatable({ __params = {}, __builtins = { table = table, tostring = tostring } }, Server.Template)
-  local env = setmetatable({}, {  __index = function(_, k) return rawget(t.__builtins, k) or t.__params[k] end, __newindex = function(_, k, v) t.__params[k] = v end })
-  local template_contents = "return function(params) local __contents = {} " .. table.concat(constructs) .. " return table.concat(__contents) end"
-  print(template_contents)
+  local t = setmetatable({ __contexts = {}, __builtins = { table = table, tostring = tostring, ipairs = ipairs, pairs = pairs, pcall = pcall, merge = merge, escape = function(str) return str:gsub("\"", "&quot;") end } }, Server.Template)
+  t.__builtins.set_context = function(value) t.__contexts[system.thread()] = value end
+  local env = setmetatable({ }, { __index = function(_, k) return rawget(t.__builtins, k) or t.__contexts[system.thread()][k] end, __newindex = function(_, k, v) t.__contexts[system.thread()][k] = v end })
+  local template_contents = "return function(params) set_context(merge({}, params))  local __contents = {} pcall(function() " .. table.concat(constructs) .. " end) set_context(nil) return table.concat(__contents) end"
   t.__render = assert(load(template_contents, "=" .. (name or "unknown template"), "bt", env))()
   return t
 end
@@ -494,16 +514,20 @@ end
 function Server:hot_reload(loop, file, options)
   if not system.mtime(file) then return self.log:warn("Can't find " .. file .. ", so cannot hot reload.") end
   local old_modified = not package.preload.init and system.mtime(file) or 0
-  loop:add(wtk.countdown.new(0, 0.25), function()
-    if old_modified < system.mtime(file) then
-      local status, err = pcall(function()
-        for k,v in pairs(package.loaded) do if not k:find("%.c$") and not k:find("%.c%.") then package.loaded[k] = nil end end
-        assert(load(wtk.file.open(file, "rb"):read("*all"), "=" .. file))()
-        self.log:info("Hot reloaded " ..  file .. ".")
-        collectgarbage()
-      end)
-      if not status then self.log:error("Attempt to reload routes failed: " .. err) end
-      old_modified = system.mtime(file)
+  loop:job(function()
+    while true do
+      coroutine.yield(0.25)
+      collectgarbage()
+      if old_modified < system.mtime(file) then
+        local status, err = pcall(function()
+          for k,v in pairs(package.loaded) do if not k:find("%.c$") and not k:find("%.c%.") then package.loaded[k] = nil end end
+          assert(load(wtk.io.file(file, "rb"):read("*all"), "=" .. file))()
+          self.log:info("Hot reloaded " ..  file .. ".")
+          collectgarbage()
+        end)
+        if not status then self.log:error("Attempt to reload routes failed: " .. err) end
+        old_modified = system.mtime(file)
+      end
     end
   end)
 end
