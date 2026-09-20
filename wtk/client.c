@@ -11253,7 +11253,6 @@ typedef struct client_socket_t {
   struct dns_resolver* resolver;
   mbedtls_net_context net_context;
   mbedtls_ssl_context ssl_context;
-  time_t last_activity;
 } client_socket_t;
 
 static int imin(int a, int b) { return a < b ? a : b; }
@@ -11324,7 +11323,7 @@ static int f_client_socket_recvk(lua_State* L, int status, lua_KContext ctx) {
     if (recvd <= 0) {
       socket->state = STATE_CLOSED;
       lua_pushnil(L);
-			if (recvd == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) 
+			if (recvd == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY || recvd == 0) 
 				lua_pushliteral(L, "closed");
 			else {
 				mbedtls_strerror(recvd, buf, sizeof(buf));
@@ -11338,7 +11337,7 @@ static int f_client_socket_recvk(lua_State* L, int status, lua_KContext ctx) {
       return socket_yield(L, socket->fd, "read", f_client_socket_recvk);
     if (recvd <= 0) {
       socket->state = STATE_CLOSED;
-      if (recvd == -1 && errno == ECONNRESET)
+      if ((recvd == -1 && errno == ECONNRESET) || recvd == 0)
 				lua_pushliteral(L, "closed");
 			else
 				lua_pushstring(L, strerror(errno));
@@ -11360,18 +11359,31 @@ static int f_client_socket_sendk(lua_State* L, int status, lua_KContext ctx) {
   int blocking = lua_toboolean(L, 3);
   socket_set_blocking(socket, blocking);
   int written;
+  char buf[16*1024];
   if (socket->is_ssl) {
     written = mbedtls_ssl_write(&socket->ssl_context, bytes, len);
     if (written == MBEDTLS_ERR_SSL_WANT_WRITE || written == MBEDTLS_ERR_SSL_WANT_READ)
       return socket_yield(L, socket->fd, written == MBEDTLS_ERR_SSL_WANT_WRITE ? "write" : "read", f_client_socket_sendk);  
-    if (written == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) {
+    if (written < 0) {
       socket->state = STATE_CLOSED;
-      return 0;
+      lua_pushnil(L);
+			if (written == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY)
+				lua_pushliteral(L, "closed");
+			else {
+				mbedtls_strerror(written, buf, sizeof(buf));
+				lua_pushstring(L, buf);
+			}
+      return 2;
     }
   } else {
     written = write(socket->fd, bytes, len);
     if (written == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
       return socket_yield(L, socket->fd, "write", f_client_socket_sendk);
+    else if (written == -1) {
+			lua_pushnil(L);
+			lua_pushstring(L, strerror(errno));
+			return 2;
+		}
   }
   lua_pushinteger(L, written);
   return 1;
@@ -11478,7 +11490,6 @@ static int f_client_socket_openk(lua_State* L, int status, lua_KContext ctx) {
     case STATE_HANDSHAKE:
       if (c->is_ssl) {
         int status = mbedtls_ssl_handshake(&c->ssl_context);
-        c->last_activity = time(NULL);
         if (status == MBEDTLS_ERR_SSL_WANT_READ)
           return socket_yield(L, c->fd, "read", f_client_socket_openk);
         if (status == MBEDTLS_ERR_SSL_WANT_WRITE)
@@ -11799,15 +11810,21 @@ int luaopen_wtk_client_c(lua_State* L) {
     function socket:request(options)\n\
       local protocol, hostname, implied_port, explicit_port, remainder = components(options.url)\n\
       local lines = {}\n\
+      local bytes_written, err\n\
       table.insert(lines, string.format(\"%s %s HTTP/1.1\", options.method, remainder or '/'))\n\
       for k, v in pairs(options.headers) do table.insert(lines, k .. ':' .. v) end\n\
       table.insert(lines, '')\n\
       table.insert(lines, '')\n\
-      self:write(table.concat(lines, '\\r\\n'))\n\
+      bytes_written, err = self:write(table.concat(lines, '\\r\\n'))\n\
+      if not bytes_written then return nil, err end\n\
       if type(options.body) == 'function' then \n\
-        for chunk in options.body do self:write(chunk) end \n\
+        for chunk in options.body do \n\
+					bytes_written, err = self:write(chunk) \n\
+					if not bytes_written then return nil, err end\n\
+				end \n\
       elseif options.body then\n\
-        self:write(options.body)\n\
+        bytes_written, err = self:write(options.body)\n\
+        if not bytes_written then return nil, err end\n\
       end\n\
       local res = response.new(self)\n\
       self.retained = ''\n\
@@ -11835,7 +11852,7 @@ int luaopen_wtk_client_c(lua_State* L) {
     end\n\
     \n\
     function socket.new(default_options)\n\
-      local options = { max_redirects = 10, max_timeout = 5, headers = { ['user-agent'] = 'wtk-client/1.0' } }\n\
+      local options = { max_redirects = 10, max_timeout = 5, headers = { ['user-agent'] = 'wtk-client/1.0' }, cookies = {} }\n\
       for k,v in pairs(default_options or {}) do options[k] = v end\n\
       return {\n\
         connections = {},\n\
@@ -11854,26 +11871,36 @@ int luaopen_wtk_client_c(lua_State* L) {
           local res\n\
           while true do\n\
             local protocol, hostname, implied_port, explicit_port, path = components(t.url)\n\
-            if self.cookies[hostname] then\n\
+            if self.cookies and self.cookies[hostname] then\n\
               local values = {}\n\
               for k,v in pairs(self.cookies[hostname]) do table.insert(values, k .. '=' .. self.encode(v.value)) end\n\
               if not t.headers['cookie'] then t.headers['cookie'] = table.concat(values, '; ') end\n\
             end\n\
-            local key = protocol .. hostname .. implied_port\n\
-            local s = self.connections[key] or assert(socket:open(protocol, hostname, implied_port, not coroutine.isyieldable()))\n\
-            self.connections[key] = s\n\
             if not headers.host then t.headers.host = hostname .. (explicit_port and (':' .. port) or '') end\n\
-            res = assert(s:request(t))\n\
+            local key = protocol .. hostname .. implied_port\n\
+            if self.connections[key] then\n\
+							res, err = self.connections[key]:request(t)\n\
+							if not res then\n\
+								assert(err == 'closed', err)\n\
+								self.connections[key] = nil\n\
+							end\n\
+						end\n\
+						if not self.connections[key] then\n\
+							self.connections[key] = assert(socket:open(protocol, hostname, implied_port, not coroutine.isyieldable()))\n\
+							res = assert(self.connections[key]:request(t))\n\
+						end\n\
             if res.headers['set-cookie'] then\n\
               for i,v in ipairs(type(res.headers['set-cookie']) == 'table' and res.headers['set-cookie'] or { res.headers['set-cookie'] }) do\n\
                 local _, e, name, value = v:find('^([^=]+)=([^;]+)')\n\
-                if not self.cookies[hostname] then self.cookies[hostname] = {} end\n\
-                self.cookies[hostname][name] = { value = self.decode(value) }\n\
+                if self.cookies then\n\
+									if not self.cookies[hostname] then self.cookies[hostname] = {} end\n\
+									self.cookies[hostname][name] = { value = self.decode(value) }\n\
+								end\n\
               end\n\
             end\n\
             if res.code >= 400 then error(res.code) end\n\
             if res.code < 300 then\n\
-              if not options or options.response ~= 'nonblocking' then\n\
+              if not options or options.body ~= 'nonblocking' then\n\
                 res.body = {}\n\
                 while true do\n\
                   local chunk = res:read(4096, not coroutine.isyieldable())\n\
@@ -11904,8 +11931,7 @@ int luaopen_wtk_client_c(lua_State* L) {
         post = function(self, url, body, options, headers) return self:request('POST', url, body, options, headers) end,\n\
         put = function(self, url, body, options, headers) return self:request('PUT', url, body, options, headers) end,\n\
         delete = function(self, url, body, options, headers) return self:request('DELETE', url, body, options, headers) end,\n\
-        options = options,\n\
-        cookies = {}\n\
+        options = options\n\
       }\n\
     end\n\
   "))

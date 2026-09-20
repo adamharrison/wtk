@@ -162,6 +162,7 @@ static const luaL_Reg stream_lib[] = {
 		lua_pushinteger(L, epollfd); lua_setfield(L, -2, "epollfd");
 		lua_newtable(L); lua_setfield(L, -2, "fds");
 		lua_newtable(L); lua_setfield(L, -2, "deferred");
+		int* running = lua_newuserdata(L, sizeof(int)); *running = 0; lua_setfield(L, -2, "running");
 		luaL_setmetatable(L, "wtk.c.loop");
 		return 1;
 	}
@@ -245,11 +246,14 @@ static const luaL_Reg stream_lib[] = {
 	}
 
 	static int f_loop_run(lua_State* L) {
+		lua_getfield(L, 1, "running");
+		int* running = lua_touserdata(L, -1);
+		*running = 1;
 		lua_getfield(L, 1, "epollfd");
 		int epollfd = luaL_checkinteger(L, -1);
 		struct epoll_event ev = {0}, events[100] = {0};
 		luaL_getsubtable(L, 1, "fds");
-		while (1) {
+		while (*running) {
 			luaL_getsubtable(L, 1, "deferred");
 			lua_newtable(L);
 			lua_setfield(L, 1, "deferred");
@@ -279,6 +283,13 @@ static const luaL_Reg stream_lib[] = {
 		return 1;
 	}
 
+	static int f_loop_stop(lua_State* L) {
+		lua_getfield(L, 1, "running");
+		*((int*)lua_touserdata(L, -1)) = 0;
+		lua_pop(L, 1);
+		return 1;
+	}
+
 	static int f_loop_gc(lua_State* L) {
 		lua_getfield(L, 1, "epollfd");
 		close(luaL_checkinteger(L, -1));
@@ -290,6 +301,7 @@ static const luaL_Reg stream_lib[] = {
 		{ "add",      f_loop_add   },
 		{ "rm",       f_loop_rm    },
 		{ "run",      f_loop_run   },
+		{ "stop",		 f_loop_stop  },
 		{ "__gc",     f_loop_gc    },
 		{ NULL,       NULL }
 	};
@@ -431,6 +443,11 @@ static int f_system_isatty(lua_State* L){
 	return 1;
 }
 
+static int f_system_sleep(lua_State* L) {
+	usleep(luaL_checknumber(L, 1) * 1000000);
+	return 0;
+}
+
 static const luaL_Reg io_lib[] = {
 	{ "pipe",      f_pipe_new       },
 	{ "file",      f_file_new       },
@@ -444,6 +461,7 @@ static const luaL_Reg system_lib[] = {
 	{ "stat",      f_system_stat    },
 	{ "realpath",  f_system_realpath},
 	{ "time",      f_system_time    },
+	{ "sleep",     f_system_sleep   },
 	{ "isatty",	  f_system_isatty  },
 	{ NULL,        NULL }
 };

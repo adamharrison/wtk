@@ -10,6 +10,7 @@ local args = wtk.pargs({ ... }, {
   help = "flag",
   version = "flag",
   verbose = "flag",
+  debug = "flag",
   console = "flag",
   host = "string",
   port = "string",
@@ -44,27 +45,31 @@ The following options are available:
   os.exit(0)
 end
 
-local handler = assert(args.handler, "Please specify a handler function.")
-if handler:find("%.lua$") then
-  handler = assert(loadfile(handler))()
-  assert(type(handler) == 'function', "Map file does not return a function.")
-else
-  handler = assert(load("return function(server, request) " .. handler .. " end", "=handler"))()
-end
+--local handler = assert(args.handler, "Please specify a handler function.")
+--if handler:find("%.lua$") then
+--  handler = assert(loadfile(handler))()
+--  assert(type(handler) == 'function', "Map file does not return a function.")
+--else
+--  handler = assert(load("return function(server, request) " .. handler .. " end", "=handler"))()
+--end
 
 function Server.Request:forward(uri, options)
-  local _, res = self.client.server.agent:request(options and options.method or self.method, uri, function() return self:read(options and options.chunk or 4096) end, { body = "nonblocking", timeout = self.client.server.timeout }, merge(self.headers, options and options.headers or {}))
-  return Server.Response.new(res.code, res.headers, function() return res:read(options and options.chunk or 4096) end)
+  if not options then options = {} end
+  local PACKET_SIZE = options.chunk or 4096
+  local _, res = self.client.server.agent:request(options.method or self.method, uri, function() return self:read(chunk) end, { body = "nonblocking", timeout = self.client.server.timeout }, merge(self.headers, options.headers or {}))
+  if res.code == 101 and res.headers.upgrade == "websocket" then 
+    self:respond(Server.Response.new(res.code, res.headers))
+    -- shuttle data back and forth
+    loop:job(function() while not self.client.closed and not res.socket.closed do res.socket:write(self.client:read(PACKET_SIZE)) end self.client:close() res.socket:close() end)
+    loop:job(function() while not res.socket.closed and not self.client.closed do self.client:write(res.socket:read(PACKET_SIZE)) end self.client:close() res.socket:close() end)
+  else
+    return Server.Response.new(res.code, res.headers, function() return res:read(PACKET_SIZE) end)
+  end
 end
 
-local server = Server.new({
-  host = args.host or "0.0.0.0",
-  agent = Client.new({ cookies = false }),
-  port = args.port or 9090,
-  timeout = args.timeout or 10,
-  verbose = args.verbose,
-  debug = args.debug,
-  handler = handler
+local server = Server.new(merge(args, {
+  agent = Client.new({ cookies = false })
 }):add(loop)
+
 if args.console then loop:add(0, function() server:console() end) end
 loop:run()

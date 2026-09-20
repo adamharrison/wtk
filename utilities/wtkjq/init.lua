@@ -323,6 +323,15 @@ local wtkjq_functions = {
       return t
     end
   },
+  keys = { func = function(...) 
+    local t = {}
+    for _, a in ipairs({ ... }) do
+      for k, v in pairs(a) do
+        table.insert(t, k)
+      end
+    end
+    return t
+  end },
   empty_object = { func = function() return json.empty_object end }
 }
 wtkjq_functions.del = wtkjq_functions.delete

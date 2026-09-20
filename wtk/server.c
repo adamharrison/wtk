@@ -265,6 +265,7 @@ static int f_server_socket_bind(lua_State *L) {
 	}
   int optval = 1;
   setsockopt(sock->fd, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval));
+  setsockopt(sock->fd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
   if (bind(sock->fd, (struct sockaddr *) bind_addr, addr_len) == -1)
     return luaL_error(L, "Unable to bind: %s", strerror(errno));
   if (listen(sock->fd, 16) == -1)
