@@ -505,28 +505,39 @@ int luaopen_wtk_c(lua_State* L) {
 	wtk.Stream = wtk.stream\n\
 	wtk.Stream.__index = wtk.Stream\n\
 	function wtk.Loop:job_step(job)\n\
+		job.last_activity = wtk.system.time()\n
 		if coroutine.status(job.co) ~= 'dead' then\n\
-			local status, result = assert(coroutine.resume(job.co, job))\n\
+			local results = { select(2, assert(coroutine.resume(job.co, job))) }\n\
 			if coroutine.status(job.co) ~= 'dead' then\n\
-				if type(result) == 'number' then \n\
-					result = { time = wtk.io.countdown(result) } \n\
-					result.fd = result.time[0]\n\
+				local index = 0\n\
+				for _, result in ipairs(results) do\n\
+					if result then\n\
+						if type(result) == 'number' then \n\
+							result = { time = wtk.io.countdown(result) } \n\
+							result.fd = result.time[0]\n\
+						elseif result.socket then\n\
+							result.fd = result.socket\n\
+						end\n\
+						if not result.type then result.type = 'read' end\n\
+						if not job.waiting[index] or job.waiting[index].fd ~= result.fd or job.waiting[index].type ~= result.type then\n\
+							if job.waiting[index] then self:rm(job.waiting[index].fd) end\n\
+							job.waiting[index] = result\n\
+							self:add(result.fd, function() if result.time then self:rm(result.fd) end self:job_step(job) end, result.type, result.edge)\n\
+						end\n\
+						index = index + 1\n\
+					end\n\
 				end\n\
-				local waiting_obj, waiting_type = type(result) == 'table' and (result.socket or result.fd), type(result) == 'table' and result.type or 'read'\n\
-				if (not waiting_obj or not job.waiting) or (job.waiting.obj ~= waiting_obj) or (job.waiting_type ~= waiting_type) then\n\
-					if job.waiting then self:rm(job.waiting.obj) end\n\
-					job.waiting = nil\n\
+				for i = #job.waiting, index + 1, -1 do\n\
+					self:rm(job.waiting[i].fd)\n\
+					job.waiting[i] = nil\n\
 				end\n\
-				job.waiting = waiting_obj and { obj = waiting_obj, type = waiting_type, edge = result.edge, result = result }\n\
-				if job.waiting then \n\
-					self:add(job.waiting.obj, function() if job.waiting.result.time then self:rm(result.fd) end self:job_step(job) end, job.waiting.type, job.waiting.edge)\n\
-				else\n\
+				if index == 0 then\n\
 					self:add(function() self:job_step(job) end)\n\
 				end\n\
 			end\n\
 		end\n\
-		if coroutine.status(job.co) == 'dead' and job.waiting and job.waiting.obj then \n\
-			self:rm(job.waiting.obj)\n\
+		if coroutine.status(job.co) == 'dead' and #job.waiting > 0 then \n\
+			for i,v in ipairs(job.waiting) do self:rm(v.fd) end job.waiting {}\n\
 		end\n\
 		return job\n\
 	end\n\
@@ -546,7 +557,7 @@ int luaopen_wtk_c(lua_State* L) {
 	end\n\
 	function wtk.Stream:flush() return self end\n\
 	function wtk.Stream:print(chunk, ...) return self:write(string.format(chunk .. '\\n', ...)) end\n\
-	function wtk.Stream:yield() coroutine.yield({ fd = self[0] or self[1], type = self[0] and self[1] and 'both' or (self[0] and 'read' or 'write') }) end\n\
+	function wtk.Stream:yield(...) coroutine.yield({ fd = self[0] or self[1], type = self[0] and self[1] and 'both' or (self[0] and 'read' or 'write') }, ...) end\n\
 	function wtk.Stream:read(target, nonblocking)\n\
 			if not self.buffer then self.buffer = '' end\n\
 			local yieldable = coroutine.isyieldable()\n\
@@ -612,7 +623,7 @@ int luaopen_wtk_c(lua_State* L) {
 					return table.concat(chunks)\n\
 			end\n\
 	end\n\
-	function wtk.Loop:job(func) return self:job_step(wtk.Promise.new({ co = coroutine.create(function(job) try(function() job:resolve(func(job)) end, function(err) job:reject(err) end) end) })) end\n\
+	function wtk.Loop:job(func) return self:job_step(wtk.Promise.new({ kill = function(job) assert(coroutine.close(job.co)) self:job_step(job) job:reject('killed') end, running = function(j) return coroutine.status(j.co) ~= 'dead' end, waiting = {}, co = coroutine.create(function(job) try(function() job:resolve(func(job)) end, function(err) job:reject(err) end) end) })) end\n\
 	function wtk.Loop:await(t)\n\
 		if type(t) ~= 'table' or #t == 0 then t = { t } end\n\
 		local signal = wtk.io.pipe()\n\

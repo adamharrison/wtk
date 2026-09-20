@@ -329,13 +329,15 @@ function Client:close() self.server.log:verbose("Manually closing connnection.")
 function Client:yield(type) coroutine.yield({ socket = self.socket, type = type or "read" }) end
 
 function Server.new(t) 
-  t.socket = assert(socket.bind(t.host or "0.0.0.0", t.port or (t.debug and 8080 or 80)), "unable to bind")
-  t.mimes = { ["svg"] = "image/svg+xml", ["jpeg"] = "image/jpeg", ["jpg"] = "image/jpeg", ["png"] = "image/png", ["gif"] = "image/gif", ["js"] = "text/javascript", ["html"] = "text/html", ["css"] = "text/css", ["txt"] = "text/plain" }
-  t.codes = { [101] = "Switching Protocols", [200] = "OK", [201] = "Created", [204] = "No Content", [206] = "Partial Content", [301] = "Moved Permanently", [302] = "Found", [400] = "Bad Request", [403] = "Forbidden", [404] = "Not Found", [500] = "Internal Server Error" }
-  t.routes = { GET = { }, POST = { }, PUT = { }, DELETE = { } }
-  t.templates = {}
-  local self = setmetatable(t, Server) 
-  self.log = t.log or Server.Log.new(t.verbose)
+  local self = setmetatable(merge({
+    socket = assert(socket.bind(t.host or "0.0.0.0", t.port or (t.debug and 8080 or 80)), "unable to bind")
+    mimes = { ["svg"] = "image/svg+xml", ["jpeg"] = "image/jpeg", ["jpg"] = "image/jpeg", ["png"] = "image/png", ["gif"] = "image/gif", ["js"] = "text/javascript", ["html"] = "text/html", ["css"] = "text/css", ["txt"] = "text/plain" }
+    codes = { [101] = "Switching Protocols", [200] = "OK", [201] = "Created", [204] = "No Content", [206] = "Partial Content", [301] = "Moved Permanently", [302] = "Found", [400] = "Bad Request", [403] = "Forbidden", [404] = "Not Found", [500] = "Internal Server Error" }
+    routes = { GET = { }, POST = { }, PUT = { }, DELETE = { } }
+    log = Server.Log.new(t.verbose),
+    templates = {},
+    max_simultaneous_connections = 10
+  }, t), Server)
   local type, address, port, peer = self.socket:peer()
   if type == "unix" then
     self.log:info("Server up at %s", address)
@@ -364,8 +366,10 @@ Server.error_handler = Server.default_error_handler
 function Server:accept()
   local socket = self.socket:accept()
   if socket then 
+    assert(self.max_simultaneous_connections < self.clients, "too many simultaneous connections")
     local client = Client.new(self, socket)
     self.log:verbose("Incoming connection from '%s'", select(4, socket:peer()))
+    self.clients = self.clients + 1
     client.job = self.loop:job(function()
       while not client.closed do
         local request
@@ -387,6 +391,20 @@ function Server:accept()
         end)
         -- clear out buffer if it wasn't read
         if request then request:body() end
+      end
+    end):always(function()
+      self.clients = self.clients - 1
+    end)
+    -- if we have a timeout, add in another job to montior this one, and kill it if we exceed timeout
+    client.timeout_job = server.timeout and self.loop:job(function() 
+      while client.job:running() do
+        local time_until_timeout = server.timeout - (os.time() - client.last_activity)
+        if time_until_timeout <= 0 then
+          self.log:error("Killing inactive request; exceeded timeout.")
+          client.job:kill()
+        else
+          coroutine.yield(time_until_timeout)
+        end
       end
     end)
     return client
