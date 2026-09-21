@@ -15,8 +15,42 @@
 #include <sys/time.h>
 #include <netinet/in.h>
 
+#ifdef WTK_SERVER_SSL
+	#ifdef _WIN32
+		#error Cannot use SSL with windows.
+	#endif
+	#include <mbedtls/sha256.h>
+	#include <mbedtls/x509.h>
+	#include <mbedtls/entropy.h>
+	#include <mbedtls/ctr_drbg.h>
+	#include <mbedtls/ssl.h>
+	#include <mbedtls/error.h>
+	#include <mbedtls/net_sockets.h>
+	#ifdef MBEDTLS_DEBUG_C
+		#include <mbedtls/debug.h>
+	#endif
+#endif
 
-typedef struct { int fd; int peer; } server_socket_t;
+typedef struct { 
+	int fd; 
+	int peer; 
+	int is_ssl;
+  #ifdef WTK_SERVER_SSL
+	mbedtls_ssl_context ssl;
+	mbedtls_ssl_config conf;
+	mbedtls_pk_context pk;
+	mbedtls_x509_crt cert;
+  #endif
+} server_socket_t;
+
+#ifdef WTK_SERVER_SSL
+static void lua_pushmbedtlserror(lua_State* L, int ret) {
+	char error_buf[100];
+	mbedtls_strerror(ret, error_buf, sizeof(error_buf));
+	lua_pushstring(L, error_buf);
+}
+#endif
+
 
 static int server_imin(int a, int b) { return a < b ? a : b; }
 static int server_imax(int a, int b) { return a > b ? a : b; }
@@ -267,12 +301,12 @@ static int f_server_socket_bind(lua_State *L) {
   setsockopt(sock->fd, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval));
   setsockopt(sock->fd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
   if (bind(sock->fd, (struct sockaddr *) bind_addr, addr_len) == -1)
-    return luaL_error(L, "Unable to bind: %s", strerror(errno));
+    return luaL_error(L, "Unable to bind %s: %s", host, strerror(errno));
   if (listen(sock->fd, 16) == -1)
-    return luaL_error(L, "Unable to listen: %s", strerror(errno));
+    return luaL_error(L, "Unable to listen %s: %s", host, strerror(errno));
   if (un_bind_addr.sun_family == AF_UNIX) {
 		if (chmod(un_bind_addr.sun_path, S_IRUSR | S_IWUSR | S_IXUSR | S_IRGRP | S_IWGRP | S_IXGRP | S_IROTH | S_IWOTH | S_IXOTH))
-			return luaL_error(L, "Unable to chmod: %s", strerror(errno));
+			return luaL_error(L, "Unable to chmod: %s", host, strerror(errno));
 	}
   return 1;
 }
@@ -286,11 +320,89 @@ static int f_server_socket_accept(lua_State* L) {
 	if (flags == -1 || fcntl(fd, F_SETFL, (flags | O_NONBLOCK)) == -1) 
 		return luaL_error(L, "error setting non-blocking: %s", strerror(errno));
   server_socket_t* peer = lua_newuserdata(L, sizeof(server_socket_t));
+  memset(peer, 0, sizeof(server_socket_t));
   peer->fd = fd;
   peer->peer = 1;
   luaL_setmetatable(L, "wtk.server.c.socket");
   return 1;
 }
+
+#ifdef WTK_SERVER_SSL
+static int f_server_socket_handshake_callback( void *p_info, mbedtls_ssl_context *ssl,
+							const unsigned char *name, size_t name_len )
+{
+	int ret;
+	lua_State* L = (lua_State*)(p_info);
+  server_socket_t* sock = luaL_checkudata(L, 1, "wtk.server.c.socket");
+	luaL_checktype(L, 2, LUA_TFUNCTION);
+	lua_pushvalue(L, 2);
+	lua_pushvalue(L, 1);
+	lua_pushlstring(L, name, name_len);
+	lua_pcall(L, 2, 2, 0);
+	// returns key, certificate (+ chain, if desired)
+	if (!lua_pcall(L, 2, 3, 0) && lua_isstring(L, -3)) {
+		size_t pklen, certlen;
+		const char* pkstr = lua_tolstring(L, -3, &pklen);
+		const char* certstr = lua_tolstring(L, -2, &certlen);
+		if ((ret = mbedtls_pk_parse_key(&sock->pk, pkstr, pklen, NULL, 0)) != 0){
+			lua_pushmbedtlserror(L, ret);
+			return -1;
+		}
+		if ((ret = mbedtls_x509_crt_parse(&sock->cert, certstr, certlen) != 0)) {
+			lua_pushmbedtlserror(L, ret);
+			return -1;
+		}
+		mbedtls_ssl_set_hs_own_cert(&sock->ssl, &sock->cert, &sock->pk);
+		if (sock->cert.next)
+			mbedtls_ssl_set_hs_ca_chain(&sock->ssl, sock->cert.next, NULL);
+		return 0;
+	}
+	return -1;
+}
+
+
+static int f_server_socket_handshake(lua_State* L) {
+  server_socket_t* sock = luaL_checkudata(L, 1, "wtk.server.c.socket");
+  int ret;
+	luaL_checktype(L, 2, LUA_TFUNCTION);
+	if (!sock->is_ssl) {
+		mbedtls_ssl_init(&sock->ssl);
+    mbedtls_ssl_config_init(&sock->conf);
+    mbedtls_ssl_conf_sni(&sock->conf, f_server_socket_handshake_callback, L);
+    ret = mbedtls_ssl_config_defaults(&sock->conf,
+				MBEDTLS_SSL_IS_SERVER,
+				MBEDTLS_SSL_TRANSPORT_STREAM,
+				MBEDTLS_SSL_PRESET_DEFAULT);
+		if (!ret)
+			ret = mbedtls_ssl_setup(&sock->ssl, &sock->conf);
+		if (!ret)
+				mbedtls_ssl_set_bio(&sock->ssl, &sock->fd, mbedtls_net_send, mbedtls_net_recv, NULL);
+		if (ret) {
+			lua_pushnil(L);
+			lua_pushmbedtlserror(L, ret);
+			return 2;
+		}
+    sock->is_ssl = 1;
+	}
+  ret = mbedtls_ssl_handshake(&sock->ssl);
+  if (ret == 0) {
+		lua_pushboolean(L, 1);
+		return 1;
+	}
+	lua_pushnil(L);
+	lua_pushinteger(L, ret);
+	switch (ret) {
+		case MBEDTLS_ERR_SSL_WANT_WRITE:
+			lua_pushstring(L, "write");
+		case MBEDTLS_ERR_SSL_WANT_READ:
+			lua_pushstring(L, "read");
+		default:
+			lua_pushmbedtlserror(L, ret);
+		break;
+	}
+	return 2;
+}
+#endif
 
 static int f_server_socket_peer(lua_State* L) {
 	char own_addr[server_imax(sizeof(struct sockaddr_in), sizeof(struct sockaddr_un))];
@@ -331,8 +443,31 @@ static int f_server_socket_close(lua_State* L) {
 			if (!getsockname(sock->fd, (struct sockaddr*)&peer_addr, &peer_addr_len) && peer_addr.sun_family == AF_UNIX) 
 				unlink(peer_addr.sun_path);
 		}
+		int ret = 0;
+		if (sock->is_ssl) {
+			#ifdef WTK_SERVER_SSL
+			if ((ret = mbedtls_ssl_close_notify(&sock->ssl)) != 0) {
+				lua_pushnil(L);
+				if (ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+					lua_pushliteral(L, "write");
+					return 2;
+				} else if (ret == MBEDTLS_ERR_SSL_WANT_READ) {
+					lua_pushliteral(L, "read");
+					return 2;
+				} else
+					lua_pushmbedtlserror(L, ret);
+			}
+			mbedtls_x509_crt_free(&sock->cert);
+			mbedtls_pk_free(&sock->pk);
+			mbedtls_ssl_config_free(&sock->conf);
+			mbedtls_ssl_free(&sock->ssl);
+			sock->is_ssl = 0;
+			#endif
+		}
     close(sock->fd);
     sock->fd = 0;
+		if (ret)
+			return 2;
   }
   return 1;
 }
@@ -345,27 +480,50 @@ static int f_server_socket_recv(lua_State* L) {
   char chunk[4096];
   luaL_buffinitsize(L, &buffer, bytes);
   while (bytes > 0) {
-    length = recv(sock->fd, chunk, server_imin(sizeof(chunk), bytes), 0);
+		if (sock->is_ssl) {
+			#ifdef WTK_SERVER_SSL
+				length = mbedtls_ssl_read(&sock->ssl, chunk, server_imin(sizeof(chunk), bytes));
+			#else
+				return luaL_error(L, "invalid state");
+			#endif
+		} else {
+			length = recv(sock->fd, chunk, server_imin(sizeof(chunk), bytes), 0);
+		}
     if (length > 0) {
       bytes -= length;
       luaL_addlstring(&buffer, chunk, length);
       total_received += length;
     } else {
-			err = errno;
+			err = sock->is_ssl ? length : errno;
 			break;
 		}
   }
-  luaL_pushresult(&buffer);  
-  if (length < 0 && (err == EAGAIN || err == EWOULDBLOCK))
-		lua_pushliteral(L, "timeout");
-	else if (length < 0 && err == ECONNRESET)
-		lua_pushliteral(L, "reset");
-	else if (length < 0 && err == EPIPE)
-		lua_pushliteral(L, "pipe");
-	else if (total_received == 0 && length == 0)
-		lua_pushliteral(L, "closed");
-	else
-		lua_pushstring(L, length == -1 ? strerror(err) : NULL);
+  luaL_pushresult(&buffer); 
+  if (sock->is_ssl) {
+		#ifdef WTK_SERVER_SSL
+		if (err == MBEDTLS_ERR_SSL_WANT_WRITE)
+			lua_pushliteral(L, "write");
+		else if (err == MBEDTLS_ERR_SSL_WANT_READ)
+			lua_pushliteral(L, "read");
+		else if (err == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY)
+			lua_pushliteral(L, "closed");
+		else
+			lua_pushmbedtlserror(L, err);
+		#else 
+			return luaL_error(L, "invalid state");
+		#endif
+  } else {
+		if (length < 0 && (err == EAGAIN || err == EWOULDBLOCK))
+			lua_pushliteral(L, "read");
+		else if (length < 0 && err == ECONNRESET)
+			lua_pushliteral(L, "reset");
+		else if (length < 0 && err == EPIPE)
+			lua_pushliteral(L, "pipe");
+		else if (total_received == 0 && length == 0)
+			lua_pushliteral(L, "closed");
+		else
+			lua_pushstring(L, length == -1 ? strerror(err) : NULL);
+	}
   return 2;
 }
 
@@ -373,28 +531,54 @@ static int f_server_socket_send(lua_State* L) {
   server_socket_t* sock = luaL_checkudata(L, 1, "wtk.server.c.socket");
   size_t packet_length;
   const char* packet = luaL_checklstring(L, 2, &packet_length);
-  int res = send(sock->fd, packet, packet_length, 0);
-  if (res == -1) {
-		lua_pushnil(L);
-		if (errno == EAGAIN || errno == EWOULDBLOCK)
-			lua_pushliteral(L, "timeout");
-		else if (errno == ECONNRESET)
-			lua_pushliteral(L, "reset");
-		else if (errno == EPIPE)
-			lua_pushliteral(L, "pipe");
-		else
-			lua_pushstring(L, strerror(errno));
-	} else {
-		lua_pushinteger(L, res);
-		lua_pushnil(L);
+  if (sock->is_ssl) {
+		#ifdef WTK_SERVER_SSL
+		int res = mbedtls_ssl_write(&sock->ssl, packet, packet_length);
+		if (res < 0) {
+			lua_pushnil(L);
+			if (res == MBEDTLS_ERR_SSL_WANT_WRITE)
+				lua_pushliteral(L, "write");
+			else if (res == MBEDTLS_ERR_SSL_WANT_READ)
+				lua_pushliteral(L, "read");
+			else if (res == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY)
+				lua_pushliteral(L, "closed");
+			else
+				lua_pushmbedtlserror(L, res);
+		} else {
+			lua_pushinteger(L, res);
+			lua_pushnil(L);
+		}
+		#else 
+			return luaL_error(L, "invalid state");
+		#endif
+  } else {
+		int res = send(sock->fd, packet, packet_length, 0);
+		if (res == -1) {
+			lua_pushnil(L);
+			if (errno == EAGAIN || errno == EWOULDBLOCK)
+				lua_pushliteral(L, "write");
+			else if (errno == ECONNRESET)
+				lua_pushliteral(L, "reset");
+			else if (errno == EPIPE)
+				lua_pushliteral(L, "pipe");
+			else
+				lua_pushstring(L, strerror(errno));
+		} else {
+			lua_pushinteger(L, res);
+			lua_pushnil(L);
+		}
 	}
   return 2;
 }
 
 
+
 static const luaL_Reg server_socket_lib[] = {
   { "bind",      f_server_socket_bind   },
   { "accept",    f_server_socket_accept },
+  #ifdef WTK_SERVER_SSL
+	{ "handshake", f_server_socket_handshake },
+  #endif
   { "peer",      f_server_socket_peer   },
   { "close",     f_server_socket_close  },
   { "send",      f_server_socket_send   },

@@ -523,7 +523,7 @@ int luaopen_wtk_c(lua_State* L) {
 	wtk.Stream = wtk.stream\n\
 	wtk.Stream.__index = wtk.Stream\n\
 	function wtk.Loop:job_step(job)\n\
-		job.last_activity = wtk.system.time()\n
+		job.last_activity = wtk.system.time()\n\
 		if coroutine.status(job.co) ~= 'dead' then\n\
 			local results = { select(2, assert(coroutine.resume(job.co, job))) }\n\
 			if coroutine.status(job.co) ~= 'dead' then\n\
@@ -641,6 +641,7 @@ int luaopen_wtk_c(lua_State* L) {
 					return table.concat(chunks)\n\
 			end\n\
 	end\n\
+	function wtk.Loop:signal(signal, func) if not self.signals then self.signals = {} self:add(SIGNALFD[0], function() self.signals[SIGNALFD:read(1):byte(1)]() end) end SIGNAL(signal) self.signals[signal] = func end\n\
 	function wtk.Loop:job(func) return self:job_step(wtk.Promise.new({ kill = function(job) assert(coroutine.close(job.co)) self:job_step(job) job:reject('killed') end, running = function(j) return coroutine.status(j.co) ~= 'dead' end, waiting = {}, co = coroutine.create(function(job) try(function() job:resolve(func(job)) end, function(err) job:reject(err) end) end) })) end\n\
 	function wtk.Loop:await(t)\n\
 		if type(t) ~= 'table' or #t == 0 then t = { t } end\n\
@@ -854,12 +855,15 @@ int luaW_run(lua_State* L, int argc, char* argv[]) {
 
 #define MAX_LUAWLS 1024
 static lua_State* luaWLs[MAX_LUAWLS] = {0};
+static int luaWLsPipes[MAX_LUAWLS] = {0};
 
 static void luaW_exitsignal(int sig) {
 	for (int i = 0; i < MAX_LUAWLS; ++i) {
 		if (luaWLs[i]) {
 			lua_State* L = luaWLs[i];
 			luaWLs[i] = NULL;
+			if (luaWLsPipes)
+				close(luaWLsPipes[i]);
 			lua_close(L);
 		}
 	}
@@ -868,9 +872,28 @@ static void luaW_exitsignal(int sig) {
 
 static int luaW_signalgc(lua_State* L){
 	for (int i = 0; i < MAX_LUAWLS; ++i) {
-		if (luaWLs[i] == L)
+		if (luaWLs[i] == L) {
 			luaWLs[i] = NULL;
+			close(luaWLsPipes[i]);
+			luaWLsPipes[i] = 0;
+		}
 	}
+	return 0;
+}
+
+#define luaW_pushsignal(L, sig) lua_pushinteger(L, sig), lua_setglobal(L, #sig)
+
+static void luaW_signal_handler(int signal) {
+	for (int i = 0; i < MAX_LUAWLS; ++i) {
+		if (luaWLsPipes[i]) {
+			unsigned char data = (unsigned char)signal;
+			int written = write(luaWLsPipes[i], &data, sizeof(data));
+		}
+	}
+}
+
+static int luaW_signal_handle(lua_State* L) {
+	signal(luaL_checkinteger(L, 1), strcmp(luaL_optstring(L,2,"custom"), "default") == 0 ? SIG_DFL : luaW_signal_handler);
 	return 0;
 }
 
@@ -881,7 +904,13 @@ int luaW_signal(lua_State* L) {
 		lua_pushstring(L, "error signaling lua: too many luas");
 		return -1;
 	}
+	int pipes[2]={0};
+	if (pipe(pipes)) {
+		lua_pushfstring(L, "error signaling lua: can't create pipes: %s", strerror(errno));
+		return -1;
+	}
 	luaWLs[i] = L;
+	luaWLsPipes[i] = pipes[1];
 	signal(SIGINT, luaW_exitsignal);
 	signal(SIGTERM, luaW_exitsignal);
 	signal(SIGPIPE, SIG_IGN);
@@ -891,7 +920,17 @@ int luaW_signal(lua_State* L) {
 	lua_setfield(L, -2, "__gc");
 	lua_setmetatable(L, -2);
 	luaL_ref(L, LUA_REGISTRYINDEX);
+	f_stream_new(L, pipes[0], -1);
+	lua_setglobal(L, "SIGNALFD");
+	luaW_pushsignal(L, SIGHUP); luaW_pushsignal(L, SIGINT); luaW_pushsignal(L, SIGQUIT); luaW_pushsignal(L, SIGILL); luaW_pushsignal(L, SIGTRAP); luaW_pushsignal(L, SIGABRT); luaW_pushsignal(L, SIGBUS);
+	luaW_pushsignal(L, SIGFPE); luaW_pushsignal(L, SIGKILL); luaW_pushsignal(L, SIGUSR1); luaW_pushsignal(L, SIGSEGV); luaW_pushsignal(L, SIGUSR2); luaW_pushsignal(L, SIGPIPE); luaW_pushsignal(L, SIGALRM);
+	luaW_pushsignal(L, SIGTERM); luaW_pushsignal(L, SIGSTKFLT); luaW_pushsignal(L, SIGCHLD); luaW_pushsignal(L, SIGCONT); luaW_pushsignal(L, SIGSTOP); luaW_pushsignal(L, SIGTSTP); luaW_pushsignal(L, SIGTTIN);
+	luaW_pushsignal(L, SIGTTOU); luaW_pushsignal(L, SIGURG); luaW_pushsignal(L, SIGXCPU); luaW_pushsignal(L, SIGXFSZ); luaW_pushsignal(L, SIGVTALRM); luaW_pushsignal(L, SIGPROF); luaW_pushsignal(L, SIGWINCH);
+	luaW_pushsignal(L, SIGIO); luaW_pushsignal(L, SIGPWR); luaW_pushsignal(L, SIGSYS); luaW_pushsignal(L, SIGRTMIN); 
+	lua_pushcfunction(L, luaW_signal_handle);
+	lua_setglobal(L, "SIGNAL");
 	return 0;
 }
+
 
 #define luaW_requiref(L, module, func) int func(lua_State* L); luaL_requiref(L, module, func, 0), lua_pop(L, 1);

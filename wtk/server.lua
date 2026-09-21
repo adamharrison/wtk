@@ -186,7 +186,7 @@ function Request:body()
   return self._body 
 end
 function Request:read(len) 
-  local to_read = math.min(self.headers['content-length'] and (self.headers['content-length'] - self.length_read) or (self.method == "POST" and math.huge or 0), len)
+  local to_read = math.min(self.headers['content-length'] and (self.headers['content-length'] - self.length_read) or (self.method == "POST" and math.huge or 0), len or 0)
   if to_read == 0 then return nil end
   local str = self.client:read(to_read)
   self.length_read = self.length_read + #str 
@@ -277,18 +277,18 @@ function Request:parts()
   end
 end
 
-local Client = {}
-Client.__index = Client
-function Client.new(server, socket) return setmetatable({ last_activity = os.time(), server = server, waiting = nil, socket = socket, responsed = false, peer = select(4, socket:peer()) }, Client) end
-function Client:write(buf) 
+Server.Client = {}
+Server.Client.__index = Server.Client
+function Server.Client.new(server, socket) return setmetatable({ last_activity = os.time(), server = server, waiting = nil, socket = socket, responsed = false, peer = select(4, socket:peer()) }, Server.Client) end
+function Server.Client:write(buf) 
   self.last_activity = os.time() 
   return self.socket:send(buf) 
 end
-function Client:write_block(buf)
+function Server.Client:write_block(buf)
   while #buf > 0 do
     local len, err = self:write(buf)
-    if not len and err == "timeout" then 
-      self:yield("write") 
+    if not len and (err == "write" or err == "read") then 
+      self:yield(err) 
     elseif not len and (err == "reset" or err == "pipe") then
       self.closed = true
       break
@@ -301,7 +301,7 @@ function Client:write_block(buf)
     end
   end
 end
-function Client:read(len) 
+function Server.Client:read(len) 
   self.last_activity = os.time() 
   if self.buffer then
     local buffer = self.buffer
@@ -316,8 +316,8 @@ function Client:read(len)
   while not self.closed do
     local packet, err = self.socket:recv(len) 
     if packet and #packet > 0 then return packet end
-    if err == "timeout" then
-      self:yield()
+    if err == "read" or err == "write" then
+      self:yield(err)
     elseif err == "closed" or err == "reset" or err == "pipe" then
       self.closed = true
     else
@@ -325,18 +325,32 @@ function Client:read(len)
     end
   end
 end
-function Client:close() self.server.log:verbose("Manually closing connnection.") self.socket:close() self.closed = true end
-function Client:yield(type) coroutine.yield({ socket = self.socket, type = type or "read" }) end
+function Server.Client:close() 
+  self.server.log:verbose("Manually closing connnection.") 
+  while true do
+    local status, err = self.socket:close() 
+    if err == "read" or err == "write" then 
+      self:yield(err)
+    else
+      break
+    end
+  end
+  self.closed = true 
+end
+function Server.Client:yield(type) coroutine.yield({ socket = self.socket, type = type or "read" }) end
+-- handshake is normally a no-op
+function Server.Client:handshake() end
 
 function Server.new(t) 
   local self = setmetatable(merge({
-    socket = assert(socket.bind(t.host or "0.0.0.0", t.port or (t.debug and 8080 or 80)), "unable to bind")
-    mimes = { ["svg"] = "image/svg+xml", ["jpeg"] = "image/jpeg", ["jpg"] = "image/jpeg", ["png"] = "image/png", ["gif"] = "image/gif", ["js"] = "text/javascript", ["html"] = "text/html", ["css"] = "text/css", ["txt"] = "text/plain" }
-    codes = { [101] = "Switching Protocols", [200] = "OK", [201] = "Created", [204] = "No Content", [206] = "Partial Content", [301] = "Moved Permanently", [302] = "Found", [400] = "Bad Request", [403] = "Forbidden", [404] = "Not Found", [500] = "Internal Server Error" }
-    routes = { GET = { }, POST = { }, PUT = { }, DELETE = { } }
+    socket = socket.bind(t.host or "0.0.0.0", t.port or (t.debug and 8080 or 80)),
+    mimes = { ["svg"] = "image/svg+xml", ["jpeg"] = "image/jpeg", ["jpg"] = "image/jpeg", ["png"] = "image/png", ["gif"] = "image/gif", ["js"] = "text/javascript", ["html"] = "text/html", ["css"] = "text/css", ["txt"] = "text/plain" },
+    codes = { [101] = "Switching Protocols", [200] = "OK", [201] = "Created", [204] = "No Content", [206] = "Partial Content", [301] = "Moved Permanently", [302] = "Found", [400] = "Bad Request", [403] = "Forbidden", [404] = "Not Found", [500] = "Internal Server Error" },
+    routes = { GET = { }, POST = { }, PUT = { }, DELETE = { } },
     log = Server.Log.new(t.verbose),
     templates = {},
-    max_simultaneous_connections = 10
+    max_simultaneous_connections = 100,
+    clients = 0
   }, t), Server)
   local type, address, port, peer = self.socket:peer()
   if type == "unix" then
@@ -366,14 +380,15 @@ Server.error_handler = Server.default_error_handler
 function Server:accept()
   local socket = self.socket:accept()
   if socket then 
-    assert(self.max_simultaneous_connections < self.clients, "too many simultaneous connections")
-    local client = Client.new(self, socket)
+    assert(self.clients < self.max_simultaneous_connections, "too many simultaneous connections")
+    local client = Server.Client.new(self, socket)
     self.log:verbose("Incoming connection from '%s'", select(4, socket:peer()))
     self.clients = self.clients + 1
     client.job = self.loop:job(function()
       while not client.closed do
         local request
         try(function()
+          client:handshake()
           request = Request.new(client):parse_headers()
           if request then
             local res = { self:accepted(client, request) }
@@ -396,7 +411,7 @@ function Server:accept()
       self.clients = self.clients - 1
     end)
     -- if we have a timeout, add in another job to montior this one, and kill it if we exceed timeout
-    client.timeout_job = server.timeout and self.loop:job(function() 
+    client.timeout_job = self.timeout and self.loop:job(function() 
       while client.job:running() do
         local time_until_timeout = server.timeout - (os.time() - client.last_activity)
         if time_until_timeout <= 0 then
@@ -413,13 +428,11 @@ function Server:accept()
   end
 end
 function Server:add(loop)
-  loop:add(self.socket, function() 
-    self:accept()
-  end, "read")
+  loop:add(self.socket, function() self:accept() end, "read")
   self.loop = loop
   return self
 end
-function Server:stop(loop) self.loop:remove(self.socket) end
+function Server:stop(loop) loop:rm(self.socket) end
 function Server:accepted(client, request)
   return (self.handler or self.default_handler)(self, request)
 end
@@ -428,17 +441,23 @@ function Server:mimetype(file)
   return extension and self.mimes[extension] or "text/plain"
 end
 
-function Server:default_handler(request)
+function Server:get_route(request)
   for i, route in pairs(self.routes[request.method] or {}) do
     local results = { request.path:match(route.path) }
     if results and #results > 0 then
       for i,v in ipairs(results) do if v == "" then results[i] = false end end
-      local res = { route.handler(request, table.unpack(results)) }
-      return true, table.unpack(res)
+      return route, results
     end
   end
-  return false
+  return nil
 end
+
+function Server:default_handler(request)
+  local route, arguments = self:get_route(request)
+  if not handler then return false end
+  return true, route.handler(request, table.unpack(results))
+end
+
 function Server:route(method, path, func) 
   local target_path = "^" .. path .. "$"
   for _, method in ipairs(type(method) == 'table' and method or { method }) do
