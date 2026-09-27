@@ -454,8 +454,8 @@ end
 
 function Server:default_handler(request)
   local route, arguments = self:get_route(request)
-  if not handler then return false end
-  return true, route.handler(request, table.unpack(results))
+  if not route then return false end
+  return true, route.handler(request, table.unpack(arguments))
 end
 
 function Server:route(method, path, func) 
