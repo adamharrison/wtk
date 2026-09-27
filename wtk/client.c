@@ -11776,6 +11776,7 @@ int luaopen_wtk_client_c(lua_State* L) {
     socket.write = socket.send\n\
     local response = {}\n\
     response.__index = response\n\
+    response.__tostring = function(self) return self.code .. ': ' .. self.body end\n\
     function response.new(socket)\n\
       return setmetatable({ body = {}, code = nil, headers = {}, bytes_read = 0, current_chunk_size = nil, socket = socket }, response)\n\
     end\n\
@@ -11852,7 +11853,7 @@ int luaopen_wtk_client_c(lua_State* L) {
     end\n\
     \n\
     function socket.new(default_options)\n\
-      local options = { max_redirects = 10, max_timeout = 5, headers = { ['user-agent'] = 'wtk-client/1.0' }, cookies = {} }\n\
+      local options = { max_redirects = 10, redirect = true, max_timeout = 5, headers = { ['user-agent'] = 'wtk-client/1.0' }, cookies = {} }\n\
       for k,v in pairs(default_options or {}) do options[k] = v end\n\
       return {\n\
         connections = {},\n\
@@ -11862,12 +11863,13 @@ int luaopen_wtk_client_c(lua_State* L) {
           local t = { }\n\
           headers = headers or {}\n\
           options = options or {}\n\
+          t.body = body\n\
+          if t.body ~= nil and type(t.body) == 'string' and not headers['content-length'] then headers['content-length'] = #body end\n\
           for k,v in pairs(self.options) do t[k] = v end\n\
           for k,v in pairs(options) do t[k] = v end\n\
           for k,v in pairs(headers) do t.headers[k] = v end\n\
           t.method = method\n\
           t.url = url\n\
-          t.body = body\n\
           local res\n\
           while true do\n\
             local protocol, hostname, implied_port, explicit_port, path = components(t.url)\n\
@@ -11898,9 +11900,8 @@ int luaopen_wtk_client_c(lua_State* L) {
 								end\n\
               end\n\
             end\n\
-            if res.code >= 400 then error(res.code) end\n\
-            if res.code < 300 then\n\
-              if not options or options.body ~= 'nonblocking' then\n\
+            if res.code < 300 or res.code >= 400 then\n\
+              if method ~= 'HEAD' and (not options or options.body ~= 'nonblocking') then\n\
                 res.body = {}\n\
                 while true do\n\
                   local chunk = res:read(4096, not coroutine.isyieldable())\n\
@@ -11909,8 +11910,10 @@ int luaopen_wtk_client_c(lua_State* L) {
                 end\n\
                 res.body = table.concat(res.body)\n\
               end\n\
+							if res.code >= 400 then error(res) end\n\
               break \n\
             end\n\
+            if not options.redirect then return res.body, res end\n\
             t.redirected = (t.redirected or 0) + 1\n\
             if t.redirected > t.max_redirects then error('redirected ' .. t.redirected .. ', which is over the max redirect threshold') end\n\
             local location = res.headers.location\n\
@@ -11928,6 +11931,7 @@ int luaopen_wtk_client_c(lua_State* L) {
           return res.body, res\n\
         end,\n\
         get = function(self, url, options, headers) return self:request('GET', url, nil, options, headers) end,\n\
+        head = function(self, url, options, headers) return select(2, self:request('HEAD', url, nil, options, headers)) end,\n\
         post = function(self, url, body, options, headers) return self:request('POST', url, body, options, headers) end,\n\
         put = function(self, url, body, options, headers) return self:request('PUT', url, body, options, headers) end,\n\
         delete = function(self, url, body, options, headers) return self:request('DELETE', url, body, options, headers) end,\n\

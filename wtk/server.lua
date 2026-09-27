@@ -354,9 +354,9 @@ function Server.new(t)
   }, t), Server)
   local type, address, port, peer = self.socket:peer()
   if type == "unix" then
-    self.log:info("Server up at %s", address)
+    self.log:info("%s up at %s", t.name or "Server", address)
   else 
-    self.log:info("Server up on %s:%s", address, port)
+    self.log:info("%s up on %s:%s", t.name or "Server", address, port)
   end
   return self
 end

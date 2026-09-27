@@ -334,6 +334,8 @@ static int f_server_socket_handshake_callback( void *p_info, mbedtls_ssl_context
 	int ret;
 	lua_State* L = (lua_State*)(p_info);
   server_socket_t* sock = luaL_checkudata(L, 1, "wtk.server.c.socket");
+  mbedtls_ctr_drbg_context ctr_drbg;
+  mbedtls_ctr_drbg_init(&ctr_drbg);
 	luaL_checktype(L, 2, LUA_TFUNCTION);
 	lua_pushvalue(L, 2);
 	lua_pushvalue(L, 1);
@@ -344,7 +346,7 @@ static int f_server_socket_handshake_callback( void *p_info, mbedtls_ssl_context
 		size_t pklen, certlen;
 		const char* pkstr = lua_tolstring(L, -3, &pklen);
 		const char* certstr = lua_tolstring(L, -2, &certlen);
-		if ((ret = mbedtls_pk_parse_key(&sock->pk, pkstr, pklen, NULL, 0)) != 0){
+		if ((ret = mbedtls_pk_parse_key(&sock->pk, pkstr, pklen, NULL, 0, mbedtls_ctr_drbg_random, &ctr_drbg)) != 0){
 			lua_pushmbedtlserror(L, ret);
 			return -1;
 		}

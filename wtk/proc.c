@@ -13,6 +13,7 @@
 #include <sys/wait.h>
 
 int f_stream_new(lua_State* L, int readfd, int writefd);
+int execvpe(const char *file, char *const argv[], char *const envp[]);
 
 
 // Argument 1 is a table, or a string.
@@ -23,7 +24,8 @@ static int f_proc_new(lua_State* L) {
     int stdin_pipe[2];
     if (pipe(stdout_pipe) || pipe(stderr_pipe) || pipe(stdin_pipe))
         return luaL_error(L, "error creating pipes");
-    luaL_checktype(L, 1, LUA_TTABLE);
+    if (lua_type(L, 1) != LUA_TTABLE && lua_type(L, 1) != LUA_TFUNCTION)
+        return luaL_error(L, "bad argument #1 to 'new', (table or function expected, got %s)", luaL_typename(L, 1));
     int pid = fork();
     if (pid < 0) {   
         for (int i = 0; i < 2; ++i) {
@@ -38,11 +40,13 @@ static int f_proc_new(lua_State* L) {
         close(stdin_pipe[1]);
         const char* argv[256] = {0};
         const char* envp[256] = {0};
-        size_t len = lua_rawlen(L, 1);
-        for (int i = 1; i <= len && i < 256; ++i) {
-            lua_rawgeti(L, 1, i);
-            argv[i - 1] = lua_tostring(L, -1);
-            lua_pop(L, 1);
+        if (lua_type(L, 1) == LUA_TTABLE) {
+            size_t len = lua_rawlen(L, 1);
+            for (int i = 1; i <= len && i < 256; ++i) {
+                lua_rawgeti(L, 1, i);
+                argv[i - 1] = lua_tostring(L, -1);
+                lua_pop(L, 1);
+            }
         }
         if (lua_type(L, 2) == LUA_TTABLE) {
             lua_getfield(L, 2, "env");
@@ -59,10 +63,20 @@ static int f_proc_new(lua_State* L) {
         dup2(stdin_pipe[0], 0);
         dup2(stdout_pipe[1], 1);
         dup2(stderr_pipe[1], 2);
-        execvpe(argv[0], (char* const*)argv, (char* const*)envp);
-        fprintf(stderr, "error opening process at %s: %s", argv[0], strerror(errno));
-        fflush(stderr);
-        exit(-1);
+        if (lua_type(L, 1) == LUA_TTABLE) {
+            execvpe(argv[0], (char* const*)argv, (char* const*)envp);
+            fprintf(stderr, "error opening process at %s: %s", argv[0], strerror(errno));
+            fflush(stderr);
+            exit(-1);
+        } else if (lua_type(L, 1) == LUA_TFUNCTION) {
+            lua_pushvalue(L, 1);
+            if (lua_pcall(L, 0, 0, 0)) {
+                fprintf(stderr, "error in forked function: %s", lua_tostring(L, -1));
+                fflush(stderr);
+                exit(-1);
+            }
+            exit(0);
+        }
     }
     close(stdout_pipe[1]);
     close(stderr_pipe[1]);
@@ -175,7 +189,7 @@ int luaopen_wtk_proc_c(lua_State* L) {
     end\n\
     function proc.run(prog, options)\n\
         local p = proc.new(prog, options)\n\
-        if p:join() ~= 0 then error(p.stderr:read('*all')) end\n\
+        if p:join() ~= 0 then return nil, p.stderr:read('*all') end\n\
         return p.stdout:read('*all')\n\
     end\n\
     setmetatable(proc, { __call = proc.new })\n\
