@@ -282,13 +282,13 @@ static int f_server_socket_bind(lua_State *L) {
   memset(sock, 0, sizeof(server_socket_t));
   const char* host = luaL_checkstring(L, 1);
   if (strncmp(host, "unix://", 7) == 0) {
-		sock->fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
+		sock->fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
 		un_bind_addr.sun_family = AF_UNIX;
-		strncpy(un_bind_addr.sun_path, &host[7], sizeof(un_bind_addr.sun_path));
+		strncpy(un_bind_addr.sun_path, &host[7], sizeof(un_bind_addr.sun_path) - 1);
 		bind_addr = (struct sockaddr*)&un_bind_addr;
 		addr_len = sizeof(un_bind_addr);
   } else {
-		sock->fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+		sock->fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
 		in_bind_addr.sin_family = AF_INET;
 		in_bind_addr.sin_addr.s_addr = INADDR_ANY;
 		if (inet_aton(host, &in_bind_addr.sin_addr) == 0)
@@ -315,10 +315,9 @@ static int f_server_socket_accept(lua_State* L) {
   struct sockaddr_in peer_addr = {0};
   socklen_t peer_addr_len = sizeof(peer_addr);
   server_socket_t* sock = luaL_checkudata(L, 1, "wtk.server.c.socket");
-  int fd = accept(sock->fd, (struct sockaddr*)&peer_addr, &peer_addr_len);
-  int flags = fcntl(fd, F_GETFL, 0);
-	if (flags == -1 || fcntl(fd, F_SETFL, (flags | O_NONBLOCK)) == -1) 
-		return luaL_error(L, "error setting non-blocking: %s", strerror(errno));
+  int fd = accept4(sock->fd, (struct sockaddr*)&peer_addr, &peer_addr_len, SOCK_CLOEXEC | SOCK_NONBLOCK);
+  if (fd == -1)
+		return luaL_error(L, "error accepting: %s", strerror(errno));
   server_socket_t* peer = lua_newuserdata(L, sizeof(server_socket_t));
   memset(peer, 0, sizeof(server_socket_t));
   peer->fd = fd;
@@ -407,8 +406,8 @@ static int f_server_socket_handshake(lua_State* L) {
 #endif
 
 static int f_server_socket_peer(lua_State* L) {
-	char own_addr[server_imax(sizeof(struct sockaddr_in), sizeof(struct sockaddr_un))];
-	char peer_addr[server_imax(sizeof(struct sockaddr_in), sizeof(struct sockaddr_un))];
+	char own_addr[server_imax(sizeof(struct sockaddr_in), sizeof(struct sockaddr_un))] = {0};
+	char peer_addr[server_imax(sizeof(struct sockaddr_in), sizeof(struct sockaddr_un))] = {0};
   socklen_t peer_addr_len = sizeof(peer_addr);
   server_socket_t* sock = luaL_checkudata(L, 1, "wtk.server.c.socket");
   if (getsockname(sock->fd, (struct sockaddr*)&own_addr, &peer_addr_len))
