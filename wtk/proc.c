@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <pwd.h>
 
 int f_stream_new(lua_State* L, int readfd, int writefd);
 int execvpe(const char *file, char *const argv[], char *const envp[]);
@@ -48,6 +49,9 @@ static int f_proc_new(lua_State* L) {
                 lua_pop(L, 1);
             }
         }
+        dup2(stdin_pipe[0], 0);
+        dup2(stdout_pipe[1], 1);
+        dup2(stderr_pipe[1], 2);
         if (lua_type(L, 2) == LUA_TTABLE) {
             lua_getfield(L, 2, "env");
             if (!lua_isnil(L, -1)) {
@@ -59,10 +63,32 @@ static int f_proc_new(lua_State* L) {
                 }
             }
             lua_pop(L, 1);
+            lua_getfield(L, 2, "wd");
+            if (!lua_isnil(L, -1)) {
+                if (chdir(lua_tostring(L, -1))) {
+                    fprintf(stderr, "error chdiring process at %s: %s", argv[0], strerror(errno));
+                    fflush(stderr);
+                    exit(-1);
+                }
+            }
+            lua_pop(L, 1);
+            lua_getfield(L, 2, "uid");
+            if (!lua_isnil(L, -1)) {
+                int uid = 0;
+                if (lua_type(L, -1) == LUA_TSTRING)  {
+                    struct passwd* pass = getpwnam(lua_tostring(L, -1));
+                    if (pass)
+                        uid = pass->pw_uid;
+                } else 
+                    uid = lua_tointeger(L, -1);
+                if (!uid || setuid(lua_tointeger(L, -1))) {
+                    fprintf(stderr, "error setuid process at %s: %s", argv[0], strerror(errno));
+                    fflush(stderr);
+                    exit(-1);
+                }
+            }
+            lua_pop(L, 1);
         }
-        dup2(stdin_pipe[0], 0);
-        dup2(stdout_pipe[1], 1);
-        dup2(stderr_pipe[1], 2);
         if (lua_type(L, 1) == LUA_TTABLE) {
             execvpe(argv[0], (char* const*)argv, (char* const*)envp);
             fprintf(stderr, "error opening process at %s: %s", argv[0], strerror(errno));

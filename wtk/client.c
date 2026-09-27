@@ -11417,7 +11417,10 @@ static int f_client_socket_openk(lua_State* L, int status, lua_KContext ctx) {
         snprintf(err, sizeof(err), "can't resolve %s: %s", hostname, dns_strerror(error));
         break;
       }
-      c->fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+      if (strcmp(protocol, "unix") == 0) 
+				c->fd = socket(AF_UNIX, SOCK_STREAM, 0);
+      else
+				c->fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
       if (strcmp(protocol, "https") == 0) {
         c->is_ssl = 1;
         int status;
@@ -11431,7 +11434,7 @@ static int f_client_socket_openk(lua_State* L, int status, lua_KContext ctx) {
         mbedtls_ssl_set_bio(&c->ssl_context, &c->net_context, mbedtls_net_send, mbedtls_net_recv, NULL);
       }
       socket_set_blocking(c, blocking);
-      c->state = STATE_RESOLVING;
+      c->state = strcmp(protocol, "unix") == 0 ? STATE_RESOLVING : STATE_CONNECTING;
     case STATE_RESOLVING:
       while (c->state == STATE_RESOLVING) {
         int error = 0;
@@ -11473,11 +11476,21 @@ static int f_client_socket_openk(lua_State* L, int status, lua_KContext ctx) {
       }
     case STATE_CONNECTING: {
       signal(SIGPIPE, SIG_IGN);
-      const char* ip = inet_ntoa(c->addr.sin_addr);
-      if (connect(c->fd, (struct sockaddr *) &c->addr, sizeof(c->addr)) == -1) {
-        snprintf(err, sizeof(err), "can't connect to host %s [%s] on port %d", hostname, ip, port);
-        break;
-      }
+      if (strcmp(protocol, "unix") == 0) {
+				struct sockaddr_un path = {0};
+				path.sun_family = AF_UNIX;
+				strncpy(path.sun_path, hostname, sizeof(path.sun_path) - 1);
+				if (connect(c->fd, (struct sockaddr *) &path, sizeof(path)) == -1) {
+					snprintf(err, sizeof(err), "can't connect to unix socket at %s", hostname);
+					break;
+				}
+			} else {
+				const char* ip = inet_ntoa(c->addr.sin_addr);
+				if (connect(c->fd, (struct sockaddr *) &c->addr, sizeof(c->addr)) == -1) {
+					snprintf(err, sizeof(err), "can't connect to host %s [%s] on port %d", hostname, ip, port);
+					break;
+				}
+			}
       if (c->is_ssl) {
         if ((status = mbedtls_net_set_nonblock(&c->net_context)) != 0) {
           mbedtls_snprintf(1, err, sizeof(err), status, "can't set up ssl for nonblocking: %d", status);

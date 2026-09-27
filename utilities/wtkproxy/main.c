@@ -1,13 +1,14 @@
 #define WTK_SERVER_SSL
 
+#include <mbedtls/x509_csr.h>
+#include <mbedtls/sha256.h>
+#include <stdio.h>
+
 #include <wtk.c>
 #include <server.c>
 #include <client.c>
 #include <json.c>
 #include <proc.c>
-#include <stdio.h>
-#include <mbedtls/x509_csr.h>
-#include <mbedtls/sha256.h>
 
 #ifndef WTKPROXY_VERSION
   #define WTKPROXY_VERSION "unknown"

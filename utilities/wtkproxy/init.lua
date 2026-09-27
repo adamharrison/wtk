@@ -232,6 +232,15 @@ proxy.agent = Client.new({ cookies = false })
 proxy.log = Server.Log.new(args.verbose)
 proxy.servers = {}
 proxy.challenges = {}
+
+function proxy.startup_process(execute)
+  proxy.log:info("Spinning up executable for %s.", execute.bin[1])
+  local process = proc.new(assert(execute.bin, "missing bin option"), { wd = execute.wd, uid = execute.user })
+  loop:job(function() while true do local chunk = process.stdout:read(4096) if chunk then io.stdout:write(chunk) else if process:status() then break end process.stdout:yield() end end end)
+  loop:job(function() while true do local chunk = process.stderr:read(4096) if chunk then io.stderr:write(chunk) else if process:status() then break end process.stderr:yield() end end end)
+  return process
+end
+
 function proxy.handler(self, request)
   local host = assert(self:get_host(request.headers.host), { code = 404, message = "can't find host " .. (request.headers.host or "unknown") })
   if proxy.challenges[host] then 
@@ -245,10 +254,7 @@ function proxy.handler(self, request)
   local target = location or host
   target.last_request = os.time()
   if target.execute and not target.running then
-    proxy.log:info("Spinning up executable for %s.", request.headers.host)
-    local process = proc.new(assert(target.execute.bin, "missing bin option"))
-    loop:job(function() while true do local chunk = process.stdout:read(4096) if chunk then io.stdout:write(chunk) else if process:status() then break end process.stdout:yield() end end end)
-    loop:job(function() while true do local chunk = process.stderr:read(4096) if chunk then io.stderr:write(chunk) else if process:status() then break end process.stderr:yield() end end end)
+    target.running = proxy.startup_process(target.execute)
     if target.execute.idle then
       loop:job(function() while true do 
         local timeout = target.execute.idle - (os.time() - target.last_request)
@@ -262,7 +268,6 @@ function proxy.handler(self, request)
         end
       end end)
     end
-    target.running = process
     coroutine.yield(target.spinup or 0.1)
   end
   if target.forward then
@@ -278,15 +283,14 @@ function proxy.handler(self, request)
 end
 
 local function decode_hosts(server)
-  if server.ssl then
-    for i, host in ipairs(server.hosts) do
-      if host.ssl then
-        if host.ssl == true then host.ssl = {} end
-        if not host.ssl.key and host.ssl.key_path then host.ssl.key = assert(wtk.io.file(host.ssl.key_path, "rb")):read("*all") assert(ACME.component(host.ssl.key), "key specified at " .. host.ssl.key_path .. " is invalid") end
-        if not host.ssl.cert and host.ssl.cert_path then host.ssl.cert = assert(wtk.io.file(host.ssl.cert_path, "rb")):read("*all") assert(ACME.cert(host.ssl.cert), "cert specified at " .. host.ssl.cert_path .. " is invalid") end
-        if host.hostname then host.hostname = arrayify(host.hostname) end
-      end
+  for i, host in ipairs(server.hosts) do
+    if host.ssl then
+      if host.ssl == true then host.ssl = {} end
+      if not host.ssl.key and host.ssl.key_path then host.ssl.key = assert(wtk.io.file(host.ssl.key_path, "rb")):read("*all") assert(ACME.component(host.ssl.key), "key specified at " .. host.ssl.key_path .. " is invalid") end
+      if not host.ssl.cert and host.ssl.cert_path then host.ssl.cert = assert(wtk.io.file(host.ssl.cert_path, "rb")):read("*all") assert(ACME.cert(host.ssl.cert), "cert specified at " .. host.ssl.cert_path .. " is invalid") end
+      if host.hostname then host.hostname = arrayify(host.hostname) end
     end
+    if host.execute and not host.execute.idle then host.running = proxy.startup_process(host.execute) end
   end
   return server
 end
@@ -294,7 +298,12 @@ end
 local function load_config(path)
   local add_acme = args.acme
   proxy.log:info("Loading configuration from %s...", path)
-  for i, server in ipairs(proxy.servers) do server:stop(loop) end
+  for i, server in ipairs(proxy.servers) do 
+    server:stop(loop)
+    for _, host in server.hosts do
+      if host.running then host.running:term(5) host.running = nil end
+    end
+  end
   proxy.servers = {}
   collectgarbage()
   local config = assert(json.decode(assert(wtk.io.file(path, "rb")):read("*all")))
