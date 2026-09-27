@@ -529,7 +529,7 @@ int luaopen_wtk_c(lua_State* L) {
 			if coroutine.status(job.co) ~= 'dead' then\n\
 				local index = 0\n\
 				for _, result in ipairs(results) do\n\
-					if result then\n\
+					if result and (type(result) ~= 'number' or result > 0) then\n\
 						if type(result) == 'number' then \n\
 							result = { time = wtk.io.countdown(result) } \n\
 							result.fd = result.time[0]\n\

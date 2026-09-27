@@ -39,12 +39,13 @@ function ACME:request(url, payload)
   self.log:verbose("< %s", body)
   return json.decode(body), res
 end
-function ACME:get_nonce() self.log:verbose("HEAD %s", self:resolve("/new-nonce")) return assert(self.client:head(self:resolve("/new-nonce")).headers['replay-nonce'], "unable to get nonce") end
+function ACME:get_nonce() self.log:verbose("HEAD %s", self:resolve(self:directory().newNonce)) return assert(self.client:head(self:resolve(self:directory().newNonce)).headers['replay-nonce'], "unable to get nonce") end
+function ACME:directory() if not self.directory then self.directory = json.decode(assert(self.client:get(self:resolve("/directory")))) end return self.directory end
 function ACME:get_account(email) -- by the ACME standard, this will not create a new account, if using the same public key
-  local body, res = self:request("/new-acct", { termsOfServiceAgreed = true, contact = { "mailto:" .. email } })
+  local body, res = self:request(self:directory().newAccount, { termsOfServiceAgreed = true, contact = { "mailto:" .. email } })
   return assert(res.headers.location, "can't find account")
 end
-function ACME:create_order(domains, options) return self:request("/new-order", { identifiers = map(function(e) return { type = "dns", value = e } end, type(domains) == 'table' and domains or domains), notBefore = options.notBefore, notAfter = options.notAfter }) end
+function ACME:create_order(domains, options) return self:request(self:directory().newOrder, { identifiers = map(function(e) return { type = "dns", value = e } end, type(domains) == 'table' and domains or domains), notBefore = options.notBefore, notAfter = options.notAfter }) end
 function ACME:get_certificate(email, key, domains, options) 
   options = options or {}
   self.account = self:get_account(email)
@@ -133,8 +134,9 @@ The following options are available:
             "key_path": "/var/www/server/key.key",
             "cert_path": "/var/www/server/cert.crt"
           },
+          "forward": "http://127.0.0.1:5888",
           "execute": {
-            "bin": ["/var/www/server"],
+            "bin": ["/var/www/server", "--port", "5888"],
             "idle": 600
           }
         }, {
@@ -168,14 +170,19 @@ end
 function Server.Request:forward(uri, options)
   if not options then options = {} end
   local PACKET_SIZE = options.chunk or 4096
-  local _, res = self.client.server.agent:request(options.method or self.method, uri, function() return self:read(chunk) end, { body = "nonblocking", timeout = self.client.server.timeout }, self.headers)
+  local protocol, hostname, port = Client.componentsURI(uri)
+  assert(protocol, "unable to parse uri: " .. uri)
+  local agent = Client:open(protocol, hostname, port)
+  local res = agent:request({ method = options.method or self.method, url = uri, headers = self.headers or {}, body = options.method ~= "GET" and options.method ~= "HEAD" and function() return self:read(PACKET_SIZE) end })
   if res.code == 101 and res.headers.upgrade == "websocket" then 
     self:respond(Server.Response.new(options.code or res.code, res.headers))
     -- shuttle data back and forth
     loop:job(function() while not self.client.closed and not res.socket.closed do res.socket:write(self.client:read(PACKET_SIZE)) end self.client:close() res.socket:close() end)
     loop:job(function() while not res.socket.closed and not self.client.closed do self.client:write(res.socket:read(PACKET_SIZE)) end self.client:close() res.socket:close() end)
   else
-    return Server.Response.new(options.code or res.code, merge(res.headers, options.headers or {}), function() return res:read(PACKET_SIZE) end)
+    self:respond(Server.Response.new(options.code or res.code, merge(res.headers, options.headers or {}), function() return res:read(PACKET_SIZE) end))
+    agent:close()
+    if res.headers.connection == "close" then self.client:close() end
   end
 end
 
@@ -220,34 +227,55 @@ function Server.Client:handshake(client)
 end
 
 
-local proxy = {
-  agent = Client.new({ cookies = false }),
-  log = Server.Log.new(args.verbose),
-  servers = {},
-  challenges = {},
-  handler = function(self, request)
-    local host = assert(self:get_host(request.headers.host), { code = 404, message = "can't find host " .. (request.headers.host or "unknown") })
-    if proxy.challenges[host] then 
-      local token = request.path:match("/.well-known/acme-challenge/([^/]+)")
-      if token and proxy.challenges[token] then 
-        proxy.log:info("Responding to challenge for %s at %s.", host, request.path)
-        return request:respond(200, { ['Content-Type'] = "application/octet-stream" }, proxy.challenges[token])
-      end
-    end
-    local location, remainder = self:get_location(host, request)
-    local target = location or host
-    if target.forward then
-      self.log:verbose("Forwarding request to %s...", target.forward)
-      return request:forward(target.forward, target)
-    elseif target.static then
-      return request:file(target.static .. remainder, target.headers)
-    elseif target.code then
-      return request:respond(target.code, target.headers, target.body)
-    else
-      error({ code = 404 })
+local proxy = {}
+proxy.agent = Client.new({ cookies = false })
+proxy.log = Server.Log.new(args.verbose)
+proxy.servers = {}
+proxy.challenges = {}
+function proxy.handler(self, request)
+  local host = assert(self:get_host(request.headers.host), { code = 404, message = "can't find host " .. (request.headers.host or "unknown") })
+  if proxy.challenges[host] then 
+    local token = request.path:match("/.well-known/acme-challenge/([^/]+)")
+    if token and proxy.challenges[token] then 
+      proxy.log:info("Responding to challenge for %s at %s.", host, request.path)
+      return request:respond(200, { ['Content-Type'] = "application/octet-stream" }, proxy.challenges[token])
     end
   end
-}
+  local location, remainder = self:get_location(host, request)
+  local target = location or host
+  target.last_request = os.time()
+  if target.execute and not target.running then
+    proxy.log:info("Spinning up executable for %s.", request.headers.host)
+    local process = proc.new(assert(target.execute.bin, "missing bin option"))
+    loop:job(function() while true do local chunk = process.stdout:read(4096) if chunk then io.stdout:write(chunk) else if process:status() then break end process.stdout:yield() end end end)
+    loop:job(function() while true do local chunk = process.stderr:read(4096) if chunk then io.stderr:write(chunk) else if process:status() then break end process.stderr:yield() end end end)
+    if target.execute.idle then
+      loop:job(function() while true do 
+        local timeout = target.execute.idle - (os.time() - target.last_request)
+        if process:status() or timeout <= 0 then
+          proxy.log:info("Terminating executable for %s...", request.headers.host)
+          proxy.log:info("Finished terminating executable for %s, exit code %d.", request.headers.host, process:term(target.execute.termout or 10))
+          target.running = nil
+          break
+        else
+          coroutine.yield(timeout) 
+        end
+      end end)
+    end
+    target.running = process
+    coroutine.yield(target.spinup or 0.1)
+  end
+  if target.forward then
+    self.log:verbose("Forwarding request to %s...", target.forward)
+    return request:forward(target.forward, target)
+  elseif target.static then
+    return request:file(target.static .. remainder, target.headers)
+  elseif target.code then
+    return request:respond(target.code, target.headers, target.body)
+  else
+    error({ code = 404 })
+  end
+end
 
 local function decode_hosts(server)
   if server.ssl then
@@ -268,6 +296,7 @@ local function load_config(path)
   proxy.log:info("Loading configuration from %s...", path)
   for i, server in ipairs(proxy.servers) do server:stop(loop) end
   proxy.servers = {}
+  collectgarbage()
   local config = assert(json.decode(assert(wtk.io.file(path, "rb")):read("*all")))
   for _, server in ipairs(config.servers) do
     for _, http in ipairs(arrayify(server.http)) do

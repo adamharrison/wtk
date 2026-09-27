@@ -399,6 +399,7 @@ function Server:accept()
           end
         end, function(err)
           try(function()
+            print(err.stack)
             self:error_handler(request, err.error, client, err)
           end, function(err)
             self.log:error("Error in error handler: %s\n%s", err.error, err.stack)

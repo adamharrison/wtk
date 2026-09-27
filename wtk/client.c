@@ -11280,7 +11280,7 @@ static int socket_yield(lua_State* L, int fd, const char* type, lua_KFunction k)
   lua_setfield(L, -2, "socket");
   lua_pushstring(L, type);
   lua_setfield(L, -2, "type");
-  lua_yieldk(L, 1, 0, k);
+  return lua_yieldk(L, 1, 0, k);
 }
 
 static int socket_set_blocking(client_socket_t* c, int blocking) {
@@ -11333,10 +11333,12 @@ static int f_client_socket_recvk(lua_State* L, int status, lua_KContext ctx) {
     }
   } else {
     recvd = read(socket->fd, buf, imin(sizeof(buf), bytes));
-    if (recvd == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
+    if (recvd == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
       return socket_yield(L, socket->fd, "read", f_client_socket_recvk);
+    }
     if (recvd <= 0) {
       socket->state = STATE_CLOSED;
+      lua_pushnil(L);
       if ((recvd == -1 && errno == ECONNRESET) || recvd == 0)
 				lua_pushliteral(L, "closed");
 			else
@@ -11722,7 +11724,7 @@ int luaopen_wtk_client_c(lua_State* L) {
     local socket = ...\n\
     local PATHSEP = '/'\n\
     socket.ssl('system', '/tmp' .. PATHSEP .. 'ssl.certs', 0)\n\
-    local function components(url)\n\
+    function socket.componentsURI(url)\n\
       local _, _, protocol, hostname, port, url = url:find('^(%w+)://([^/:]+):?(%d*)(.*)$')\n\
       return protocol, hostname, (not port or port == '') and (protocol == 'https' and 443 or 80) or tonumber(port), (port and port ~= '') and port or nil, (not url or url == '' and '/' or url)\n\
     end\n\
@@ -11809,7 +11811,7 @@ int luaopen_wtk_client_c(lua_State* L) {
     \n\
     \n\
     function socket:request(options)\n\
-      local protocol, hostname, implied_port, explicit_port, remainder = components(options.url)\n\
+      local protocol, hostname, implied_port, explicit_port, remainder = socket.componentsURI(options.url)\n\
       local lines = {}\n\
       local bytes_written, err\n\
       table.insert(lines, string.format(\"%s %s HTTP/1.1\", options.method, remainder or '/'))\n\
@@ -11872,7 +11874,7 @@ int luaopen_wtk_client_c(lua_State* L) {
           t.url = url\n\
           local res\n\
           while true do\n\
-            local protocol, hostname, implied_port, explicit_port, path = components(t.url)\n\
+            local protocol, hostname, implied_port, explicit_port, path = socket.componentsURI(t.url)\n\
             if self.cookies and self.cookies[hostname] then\n\
               local values = {}\n\
               for k,v in pairs(self.cookies[hostname]) do table.insert(values, k .. '=' .. self.encode(v.value)) end\n\
@@ -11910,7 +11912,6 @@ int luaopen_wtk_client_c(lua_State* L) {
                 end\n\
                 res.body = table.concat(res.body)\n\
               end\n\
-							if res.code >= 400 then error(res) end\n\
               break \n\
             end\n\
             if not options.redirect then return res.body, res end\n\
@@ -11922,19 +11923,19 @@ int luaopen_wtk_client_c(lua_State* L) {
             t.body = nil\n\
             if t.headers then t.headers['content-length'] = nil end\n\
             if location:find('^/') then\n\
-              protocol, hostname, implied_port, explicit_port, path = components(t.url)\n\
+              protocol, hostname, implied_port, explicit_port, path = socket.componentsURI(t.url)\n\
               t.url = protocol .. '://' .. hostname .. (explicit_port and (':' .. explicit_port) or '') .. location\n\
             else\n\
               t.url = location\n\
             end\n\
           end\n\
-          return res.body, res\n\
+          return res\n\
         end,\n\
-        get = function(self, url, options, headers) return self:request('GET', url, nil, options, headers) end,\n\
-        head = function(self, url, options, headers) return select(2, self:request('HEAD', url, nil, options, headers)) end,\n\
-        post = function(self, url, body, options, headers) return self:request('POST', url, body, options, headers) end,\n\
-        put = function(self, url, body, options, headers) return self:request('PUT', url, body, options, headers) end,\n\
-        delete = function(self, url, body, options, headers) return self:request('DELETE', url, body, options, headers) end,\n\
+        get = function(self, url, options, headers) local res = self:request('GET', url, nil, options, headers) assert(res.code < 400, res) return res.body, res end,\n\
+        head = function(self, url, options, headers) local res = self:request('HEAD', url, nil, options, headers) assert(res.code < 400, res) return res end,\n\
+        post = function(self, url, body, options, headers) local res = self:request('POST', url, body, options, headers) assert(res.code < 400, res) return res.body, res end,\n\
+        put = function(self, url, body, options, headers) local res = self:request('PUT', url, body, options, headers) assert(res.code < 400, res) return res.body, res end,\n\
+        delete = function(self, url, body, options, headers) local res = self:request('DELETE', url, body, options, headers) assert(res.code < 400, res) return res.body, res end,\n\
         options = options\n\
       }\n\
     end\n\
