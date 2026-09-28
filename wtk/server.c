@@ -354,15 +354,17 @@ static int f_server_socket_handshake_callback( void *p_info, mbedtls_ssl_context
 		const char* pkstr = lua_tolstring(L, -2, &pklen);
 		const char* certstr = lua_tolstring(L, -1, &certlen);
 		if (
-			(ret = mbedtls_pk_parse_key(&sock->pk, pkstr, pklen, NULL, 0, mbedtls_ctr_drbg_random, &sock->ctr_drbg)) != 0 ||
-			(ret = mbedtls_x509_crt_parse(&sock->cert, certstr, certlen)) != 0 ||
+			(ret = mbedtls_pk_parse_key(&sock->pk, pkstr, pklen + 1, NULL, 0, mbedtls_ctr_drbg_random, &sock->ctr_drbg)) != 0 ||
+			(ret = mbedtls_x509_crt_parse(&sock->cert, certstr, certlen + 1)) != 0 ||
 			(ret = mbedtls_ssl_set_hs_own_cert(&sock->ssl, &sock->cert, &sock->pk)) != 0
 		) {
+			lua_pop(L, 2);
 			lua_pushmbedtlserror(L, ret);
+		} else {
+			lua_pop(L, 2);
 		}
 		if (sock->cert.next)
 			mbedtls_ssl_set_hs_ca_chain(&sock->ssl, sock->cert.next, NULL);
-		lua_pop(L, 2);
 		return ret == 0 ? 0 : -1;
 	}
 	return -1;
@@ -450,7 +452,13 @@ static int f_server_socket_handshake(lua_State* L) {
 	switch (ret) {
 		case MBEDTLS_ERR_SSL_WANT_WRITE: lua_pushstring(L, "write"); break;
 		case MBEDTLS_ERR_SSL_WANT_READ: lua_pushstring(L, "read"); break;
-		default: lua_pushvalue(L, -2); f_server_socket_close(L); break;
+		default: 
+			if (lua_isstring(L, -2))
+				lua_pushvalue(L, -2);
+			else
+				lua_pushmbedtlserror(L, ret);
+			f_server_socket_close(L); 
+		break;
 	}
 	return 2;
 }

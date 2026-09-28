@@ -137,11 +137,13 @@ static int f_parse_cert(lua_State* L) {
   const char* certificate = luaL_checklstring(L, 1, &certificate_length);
   mbedtls_x509_crt crt;
   mbedtls_x509_crt_init(&crt);
-  int ret = mbedtls_x509_crt_parse(&crt, certificate, certificate_length);
-  if (ret) {
+  int ret = mbedtls_x509_crt_parse(&crt, certificate, certificate_length + 1);
+  if (ret < 0) {
     mbedtls_x509_crt_free(&crt);
+    char error_buf[1024]={0};
+    mbedtls_strerror(ret, error_buf, sizeof(error_buf));
     lua_pushnil(L);
-    lua_pushliteral(L, "error parsing certificate");
+    lua_pushfstring(L, "error parsing certificate: %s", error_buf);
     return 2;
   }
   lua_newtable(L);
@@ -164,13 +166,8 @@ static int f_create_csr(lua_State* L) {
   const char* pers = "csr_create";
   size_t private_key_length;
   const char* private_key = luaL_checklstring(L, 1, &private_key_length);
-  luaL_checktype(L, 2, LUA_TTABLE);
-  const char* domain = NULL;
-  if (lua_rawlen(L, 2) >= 1) {
-    lua_rawgeti(L, 2, 1);
-    domain = luaL_checkstring(L, -1);
-    lua_pop(L, 1);
-  }
+  const char* domain = luaL_checkstring(L, 2);
+  luaL_checktype(L, 3, LUA_TTABLE);
   mbedtls_ctr_drbg_context ctr_drbg;
   mbedtls_ctr_drbg_init(&ctr_drbg);
   mbedtls_entropy_context entropy;
@@ -183,20 +180,22 @@ static int f_create_csr(lua_State* L) {
   mbedtls_x509write_csr_init(&req);
   mbedtls_x509write_csr_set_md_alg(&req, MBEDTLS_MD_SHA256);
   mbedtls_x509write_csr_set_key(&req, &key);
-  mbedtls_x509write_csr_set_subject_name(&req, domain);
+  ret = mbedtls_x509write_csr_set_subject_name(&req, domain);
   mbedtls_x509_san_list* subject_list = NULL;
-  for (int i = 1; i <= lua_rawlen(L, 2); ++i) {
-    mbedtls_x509_san_list* list = calloc(1, sizeof(mbedtls_x509_san_list));
-    list->node.type = MBEDTLS_X509_SAN_DNS_NAME;
-    lua_rawgeti(L, 2, i);
-    list->node.san.unstructured_name.p = (char*)luaL_checklstring(L, -1, &list->node.san.unstructured_name.len);
-    lua_pop(L, 1);
-    list->next = subject_list;
-    subject_list = list;
+  unsigned char buf[4096]={0};
+  if (ret == 0) {
+    for (int i = 1; i <= lua_rawlen(L, 3); ++i) {
+      mbedtls_x509_san_list* list = calloc(1, sizeof(mbedtls_x509_san_list));
+      list->node.type = MBEDTLS_X509_SAN_DNS_NAME;
+      lua_rawgeti(L, 3, i);
+      list->node.san.unstructured_name.p = (char*)luaL_checklstring(L, -1, &list->node.san.unstructured_name.len);
+      lua_pop(L, 1);
+      list->next = subject_list;
+      subject_list = list;
+    }
+    mbedtls_x509write_csr_set_subject_alternative_name(&req, subject_list);
+    ret = mbedtls_x509write_csr_der(&req, buf, sizeof(buf), mbedtls_ctr_drbg_random, &ctr_drbg); 
   }
-  mbedtls_x509write_csr_set_subject_alternative_name(&req, subject_list);
-  unsigned char buf[4096];  
-  ret = mbedtls_x509write_csr_pem(&req, buf, sizeof(buf), mbedtls_ctr_drbg_random, &ctr_drbg);
   mbedtls_pk_free(&key);
   mbedtls_ctr_drbg_free(&ctr_drbg);
   mbedtls_entropy_free(&entropy);
@@ -204,13 +203,13 @@ static int f_create_csr(lua_State* L) {
   while (subject_list) {
     mbedtls_x509_san_list* list = subject_list->next;
     free(subject_list);
-    subject_list = list->next;
+    subject_list = list ? list->next : NULL;
   }
-  if (ret) {
+  if (ret < 0) {
     mbedtls_strerror(ret, buf, sizeof(buf));
-    return luaL_error(L, "error generating private key: %s", buf);
+    return luaL_error(L, "error generating certificate signing request: %s", buf);
   }
-  lua_pushstring(L, buf);
+  lua_pushlstring(L, &buf[sizeof(buf) - ret], ret);
   return 1;
 }
 
