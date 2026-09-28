@@ -72,14 +72,14 @@ static int f_create_keypair(lua_State* L) {
   mbedtls_entropy_init(&entropy);
   mbedtls_pk_init(&key);
   mbedtls_ctr_drbg_init(&ctr_drbg);
-  static int KEY_SIZE = 4096;
+  int key_size = luaL_optinteger(L, 1, 4096);
   static int EXPONENT = 65537;
   unsigned char privkey_buf[16000] = {0};
   unsigned char pubkey_buf[16000] = {0};
   int success = 
     ((ret = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, pers, strlen(pers))) != 0) ||
     ((ret = mbedtls_pk_setup(&key, mbedtls_pk_info_from_type(MBEDTLS_PK_RSA))) != 0) ||
-    ((ret = mbedtls_rsa_gen_key(mbedtls_pk_rsa(key), mbedtls_ctr_drbg_random, &ctr_drbg, KEY_SIZE, EXPONENT)) != 0) || 
+    ((ret = mbedtls_rsa_gen_key(mbedtls_pk_rsa(key), mbedtls_ctr_drbg_random, &ctr_drbg, key_size, EXPONENT)) != 0) || 
     ((ret = mbedtls_pk_write_key_pem(&key, privkey_buf, sizeof(privkey_buf))) != 0) ||
     ((ret = mbedtls_pk_write_pubkey_pem(&key, pubkey_buf, sizeof(pubkey_buf))) != 0);
   mbedtls_pk_free(&key);

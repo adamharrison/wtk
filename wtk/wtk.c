@@ -406,15 +406,6 @@ static int f_system_rmdir(lua_State* L) {
 }
 
 
-static int f_system_chdir(lua_State* L) {
-	if (chdir(luaL_checkstring(L, 1))) {
-		lua_pushnil(L);
-		lua_pushstring(L, strerror(errno));
-		return 2;
-	}
-	lua_pushboolean(L, 1);
-	return 1;
-}
 
 static int f_system_realpath(lua_State* L) {
 	char path[PATH_MAX];
@@ -473,7 +464,6 @@ static const luaL_Reg system_lib[] = {
 	{ "ls",        f_system_ls      },
 	{ "mkdir",     f_system_mkdir   },
 	{ "rmdir",     f_system_rmdir   },
-	{ "chdir",     f_system_chdir   },
 	{ "stat",      f_system_stat    },
 	{ "realpath",  f_system_realpath},
 	{ "time",      f_system_time    },

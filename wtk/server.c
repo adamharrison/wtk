@@ -36,10 +36,13 @@ typedef struct {
 	int peer; 
 	int is_ssl;
   #ifdef WTK_SERVER_SSL
+	int is_established;
 	mbedtls_ssl_context ssl;
 	mbedtls_ssl_config conf;
 	mbedtls_pk_context pk;
 	mbedtls_x509_crt cert;
+	mbedtls_entropy_context entropy;
+	mbedtls_ctr_drbg_context ctr_drbg;
   #endif
 } server_socket_t;
 
@@ -315,9 +318,13 @@ static int f_server_socket_accept(lua_State* L) {
   struct sockaddr_in peer_addr = {0};
   socklen_t peer_addr_len = sizeof(peer_addr);
   server_socket_t* sock = luaL_checkudata(L, 1, "wtk.server.c.socket");
-  int fd = accept4(sock->fd, (struct sockaddr*)&peer_addr, &peer_addr_len, SOCK_CLOEXEC | SOCK_NONBLOCK);
-  if (fd == -1)
-		return luaL_error(L, "error accepting: %s", strerror(errno));
+  int fd = accept(sock->fd, (struct sockaddr*)&peer_addr, &peer_addr_len);
+  int flags = fcntl(fd, F_GETFL, 0);
+	if (flags == -1 || fcntl(fd, F_SETFL, (flags | O_NONBLOCK)) == -1) 
+		return luaL_error(L, "error setting non-blocking: %s", strerror(errno));
+	flags = fcntl(fd, F_GETFD, 0);
+	if (flags == -1 || fcntl(fd, F_SETFD, (flags | FD_CLOEXEC)) == -1) 
+		return luaL_error(L, "error setting clo-exec: %s", strerror(errno));
   server_socket_t* peer = lua_newuserdata(L, sizeof(server_socket_t));
   memset(peer, 0, sizeof(server_socket_t));
   peer->fd = fd;
@@ -330,50 +337,98 @@ static int f_server_socket_accept(lua_State* L) {
 static int f_server_socket_handshake_callback( void *p_info, mbedtls_ssl_context *ssl,
 							const unsigned char *name, size_t name_len )
 {
-	int ret;
+	int ret = -1;
+  const unsigned char* pers = "handshake";
 	lua_State* L = (lua_State*)(p_info);
   server_socket_t* sock = luaL_checkudata(L, 1, "wtk.server.c.socket");
-  mbedtls_ctr_drbg_context ctr_drbg;
-  mbedtls_ctr_drbg_init(&ctr_drbg);
 	luaL_checktype(L, 2, LUA_TFUNCTION);
 	lua_pushvalue(L, 2);
-	lua_pushvalue(L, 1);
 	lua_pushlstring(L, name, name_len);
-	lua_pcall(L, 2, 2, 0);
 	// returns key, certificate (+ chain, if desired)
-	if (!lua_pcall(L, 2, 3, 0) && lua_isstring(L, -3)) {
+	if (!lua_pcall(L, 1, 2, 0)) {
+		if (!lua_isstring(L, -2) || !lua_isstring(L, -1)) {
+			lua_pushstring(L, "handshake didn't return private key and certificate");
+			return -1;
+		}
 		size_t pklen, certlen;
-		const char* pkstr = lua_tolstring(L, -3, &pklen);
-		const char* certstr = lua_tolstring(L, -2, &certlen);
-		if ((ret = mbedtls_pk_parse_key(&sock->pk, pkstr, pklen, NULL, 0, mbedtls_ctr_drbg_random, &ctr_drbg)) != 0){
+		const char* pkstr = lua_tolstring(L, -2, &pklen);
+		const char* certstr = lua_tolstring(L, -1, &certlen);
+		if (
+			(ret = mbedtls_pk_parse_key(&sock->pk, pkstr, pklen, NULL, 0, mbedtls_ctr_drbg_random, &sock->ctr_drbg)) != 0 ||
+			(ret = mbedtls_x509_crt_parse(&sock->cert, certstr, certlen)) != 0 ||
+			(ret = mbedtls_ssl_set_hs_own_cert(&sock->ssl, &sock->cert, &sock->pk)) != 0
+		) {
 			lua_pushmbedtlserror(L, ret);
-			return -1;
 		}
-		if ((ret = mbedtls_x509_crt_parse(&sock->cert, certstr, certlen) != 0)) {
-			lua_pushmbedtlserror(L, ret);
-			return -1;
-		}
-		mbedtls_ssl_set_hs_own_cert(&sock->ssl, &sock->cert, &sock->pk);
 		if (sock->cert.next)
 			mbedtls_ssl_set_hs_ca_chain(&sock->ssl, sock->cert.next, NULL);
-		return 0;
+		lua_pop(L, 2);
+		return ret == 0 ? 0 : -1;
 	}
 	return -1;
 }
 
+static int f_server_socket_close(lua_State* L) {
+  server_socket_t* sock = luaL_checkudata(L, 1, "wtk.server.c.socket");
+  if (sock->fd > 0) {
+		if (!sock->peer) {
+			struct sockaddr_un peer_addr = {0};
+			socklen_t peer_addr_len = sizeof(peer_addr);
+			if (!getsockname(sock->fd, (struct sockaddr*)&peer_addr, &peer_addr_len) && peer_addr.sun_family == AF_UNIX) 
+				unlink(peer_addr.sun_path);
+		}
+		int ret = 0;
+		if (sock->is_ssl) {
+			#ifdef WTK_SERVER_SSL
+			if (sock->is_established) {
+				if ((ret = mbedtls_ssl_close_notify(&sock->ssl)) != 0) {
+					lua_pushnil(L);
+					if (ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+						lua_pushliteral(L, "write");
+						return 2;
+					} else if (ret == MBEDTLS_ERR_SSL_WANT_READ) {
+						lua_pushliteral(L, "read");
+						return 2;
+					} else
+						lua_pushmbedtlserror(L, ret);
+				}
+			}
+			sock->is_established = 0;
+			mbedtls_x509_crt_free(&sock->cert);
+			mbedtls_pk_free(&sock->pk);
+			mbedtls_ssl_config_free(&sock->conf);
+			mbedtls_ctr_drbg_free(&sock->ctr_drbg);
+			mbedtls_entropy_free(&sock->entropy);
+			mbedtls_ssl_free(&sock->ssl);
+			sock->is_ssl = 0;
+			#endif
+		}
+    close(sock->fd);
+    sock->fd = -1;
+		if (ret)
+			return 2;
+  }
+  return 1;
+}
 
 static int f_server_socket_handshake(lua_State* L) {
   server_socket_t* sock = luaL_checkudata(L, 1, "wtk.server.c.socket");
   int ret;
 	luaL_checktype(L, 2, LUA_TFUNCTION);
 	if (!sock->is_ssl) {
+		const char* pers = "handshake";
 		mbedtls_ssl_init(&sock->ssl);
     mbedtls_ssl_config_init(&sock->conf);
     mbedtls_ssl_conf_sni(&sock->conf, f_server_socket_handshake_callback, L);
+		mbedtls_entropy_init(&sock->entropy);
+		mbedtls_pk_init(&sock->pk);
+		mbedtls_ctr_drbg_init(&sock->ctr_drbg);
+		mbedtls_ctr_drbg_seed(&sock->ctr_drbg, mbedtls_entropy_func, &sock->entropy, pers, strlen(pers));
     ret = mbedtls_ssl_config_defaults(&sock->conf,
 				MBEDTLS_SSL_IS_SERVER,
 				MBEDTLS_SSL_TRANSPORT_STREAM,
 				MBEDTLS_SSL_PRESET_DEFAULT);
+		mbedtls_ssl_conf_rng(&sock->conf, mbedtls_ctr_drbg_random, &sock->ctr_drbg );
 		if (!ret)
 			ret = mbedtls_ssl_setup(&sock->ssl, &sock->conf);
 		if (!ret)
@@ -388,26 +443,25 @@ static int f_server_socket_handshake(lua_State* L) {
   ret = mbedtls_ssl_handshake(&sock->ssl);
   if (ret == 0) {
 		lua_pushboolean(L, 1);
+		sock->is_established = 1;
 		return 1;
 	}
 	lua_pushnil(L);
-	lua_pushinteger(L, ret);
 	switch (ret) {
-		case MBEDTLS_ERR_SSL_WANT_WRITE:
-			lua_pushstring(L, "write");
-		case MBEDTLS_ERR_SSL_WANT_READ:
-			lua_pushstring(L, "read");
-		default:
-			lua_pushmbedtlserror(L, ret);
-		break;
+		case MBEDTLS_ERR_SSL_WANT_WRITE: lua_pushstring(L, "write"); break;
+		case MBEDTLS_ERR_SSL_WANT_READ: lua_pushstring(L, "read"); break;
+		default: lua_pushvalue(L, -2); f_server_socket_close(L); break;
 	}
 	return 2;
 }
 #endif
 
 static int f_server_socket_peer(lua_State* L) {
-	char own_addr[server_imax(sizeof(struct sockaddr_in), sizeof(struct sockaddr_un))] = {0};
-	char peer_addr[server_imax(sizeof(struct sockaddr_in), sizeof(struct sockaddr_un))] = {0};
+	size_t size = server_imax(sizeof(struct sockaddr_in), sizeof(struct sockaddr_un));
+	char own_addr[size];
+	char peer_addr[size];
+	memset(own_addr, 0, size);
+	memset(peer_addr, 0, size);
   socklen_t peer_addr_len = sizeof(peer_addr);
   server_socket_t* sock = luaL_checkudata(L, 1, "wtk.server.c.socket");
   if (getsockname(sock->fd, (struct sockaddr*)&own_addr, &peer_addr_len))
@@ -415,7 +469,6 @@ static int f_server_socket_peer(lua_State* L) {
   if (((struct sockaddr*)own_addr)->sa_family == AF_INET) {
 		lua_pushliteral(L, "inet");
 		lua_pushstring(L, inet_ntoa(((struct sockaddr_in*)own_addr)->sin_addr));
-		
 		lua_pushinteger(L, ntohs(((struct sockaddr_in*)own_addr)->sin_port));
 		if (!getpeername(sock->fd, (struct sockaddr*)&peer_addr, &peer_addr_len))
 			lua_pushstring(L, inet_ntoa(((struct sockaddr_in*)peer_addr)->sin_addr));
@@ -435,43 +488,6 @@ static int f_server_socket_peer(lua_State* L) {
 	return 0;
 }
 
-static int f_server_socket_close(lua_State* L) {
-  server_socket_t* sock = luaL_checkudata(L, 1, "wtk.server.c.socket");
-  if (sock->fd) {
-		if (!sock->peer) {
-			struct sockaddr_un peer_addr = {0};
-			socklen_t peer_addr_len = sizeof(peer_addr);
-			if (!getsockname(sock->fd, (struct sockaddr*)&peer_addr, &peer_addr_len) && peer_addr.sun_family == AF_UNIX) 
-				unlink(peer_addr.sun_path);
-		}
-		int ret = 0;
-		if (sock->is_ssl) {
-			#ifdef WTK_SERVER_SSL
-			if ((ret = mbedtls_ssl_close_notify(&sock->ssl)) != 0) {
-				lua_pushnil(L);
-				if (ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
-					lua_pushliteral(L, "write");
-					return 2;
-				} else if (ret == MBEDTLS_ERR_SSL_WANT_READ) {
-					lua_pushliteral(L, "read");
-					return 2;
-				} else
-					lua_pushmbedtlserror(L, ret);
-			}
-			mbedtls_x509_crt_free(&sock->cert);
-			mbedtls_pk_free(&sock->pk);
-			mbedtls_ssl_config_free(&sock->conf);
-			mbedtls_ssl_free(&sock->ssl);
-			sock->is_ssl = 0;
-			#endif
-		}
-    close(sock->fd);
-    sock->fd = 0;
-		if (ret)
-			return 2;
-  }
-  return 1;
-}
 
 static int f_server_socket_recv(lua_State* L) {
   server_socket_t* sock = luaL_checkudata(L, 1, "wtk.server.c.socket");

@@ -16,7 +16,7 @@ assert(ACME, "requires ACME to be defined by main.c")
 ACME.__index = ACME
 -- https://datatracker.ietf.org/doc/rfc8555/
 function ACME.new(options) return setmetatable(merge({ test = false, log = Server.Log.new(), configdir = nil, private_key = nil, poll_interval = 5, client = Client.new({ cookies = false }), nonce = nil, token = function(domain, token, body) end }, options), ACME) end
-function ACME:resolve(path) if path:find("^http") then return path end return string.format("https://%s.api.letsencrypt.org/acme%s", self.test and "acme-staging-v02" or "acme-v02", path) end
+function ACME:resolve(path) if path:find("^http") then return path end return string.format("https://%s.api.letsencrypt.org%s", self.test and "acme-staging-v02" or "acme-v02", path) end
 function ACME:jwk() local components = assert(ACME.components(self.private_key)) return { kty = "RSA", n = base64url(components.n), e = base64url(components.e) } end
 function ACME:request(url, payload)
   local request_body = { 
@@ -40,7 +40,7 @@ function ACME:request(url, payload)
   return json.decode(body), res
 end
 function ACME:get_nonce() self.log:verbose("HEAD %s", self:resolve(self:directory().newNonce)) return assert(self.client:head(self:resolve(self:directory().newNonce)).headers['replay-nonce'], "unable to get nonce") end
-function ACME:directory() if not self.directory then self.directory = json.decode(assert(self.client:get(self:resolve("/directory")))) end return self.directory end
+function ACME:directory() if not self._directory then self.log:verbose("GET %s", self:resolve("/directory")) local r = assert(self.client:get(self:resolve("/directory"))) self._directory = json.decode(r) end return self._directory end
 function ACME:get_account(email) -- by the ACME standard, this will not create a new account, if using the same public key
   local body, res = self:request(self:directory().newAccount, { termsOfServiceAgreed = true, contact = { "mailto:" .. email } })
   return assert(res.headers.location, "can't find account")
@@ -171,8 +171,7 @@ function Server.Request:forward(uri, options)
   if not options then options = {} end
   local PACKET_SIZE = options.chunk or 4096
   local protocol, hostname, port = Client.componentsURI(uri)
-  assert(protocol, "unable to parse uri: " .. uri)
-  local agent = Client:open(protocol, hostname, port)
+  local agent = assert(Client:open(assert(protocol, "unable to parse uri: " .. uri), hostname, port), { code = 502 })
   local res = agent:request({ method = options.method or self.method, url = uri, headers = self.headers or {}, body = options.method ~= "GET" and options.method ~= "HEAD" and function() return self:read(PACKET_SIZE) end })
   if res.code == 101 and res.headers.upgrade == "websocket" then 
     self:respond(Server.Response.new(options.code or res.code, res.headers))
@@ -190,6 +189,7 @@ function Server:get_host(host)
   host = host:gsub(":.*$", "")
   for _, server_host in ipairs(self.hosts or {}) do
     for _, hostname in ipairs(arrayify(server_host.hostname)) do
+      hostname = hostname:gsub("%.", "%%."):gsub("%-", "%%-")
       if host:find("^" .. hostname .. "$") then
         return server_host
       end
@@ -213,15 +213,16 @@ function Server:get_location(host, request)
   return nil
 end
 
-function Server.Client:handshake(client)
+function Server.Client:handshake()
   if self.server.ssl then
+    local status, err
     while true do
-      local status, err = client.socket:handshake(function(hostname)
-        local host = assert(self:get_host(hostname), "can't find host " .. hostname)
-        return assert(host.ssl.key, "can't find ssl key"), assert(host.ssl.cert, "can't find ssl cert")
+      status, err = self.socket:handshake(function(hostname)
+        local host = assert(self.server:get_host(hostname), "can't find host " .. hostname)
+        return assert(host.ssl and host.ssl.key, "can't find ssl key for " .. hostname), assert(host.ssl and host.ssl.cert, "can't find ssl cert for "  .. hostname)
       end)
       if status then break end
-      client:yield(assert(err == "write" or err == "read" and err, err))
+      self:yield(assert((err == "write" or err == "read") and err, err))
     end
   end
 end
@@ -282,8 +283,8 @@ function proxy.handler(self, request)
   end
 end
 
-local function decode_hosts(server)
-  for i, host in ipairs(server.hosts) do
+local function decode_hosts(hosts)
+  for i, host in ipairs(hosts) do
     if host.ssl then
       if host.ssl == true then host.ssl = {} end
       if not host.ssl.key and host.ssl.key_path then host.ssl.key = assert(wtk.io.file(host.ssl.key_path, "rb")):read("*all") assert(ACME.component(host.ssl.key), "key specified at " .. host.ssl.key_path .. " is invalid") end
@@ -292,7 +293,7 @@ local function decode_hosts(server)
     end
     if host.execute and not host.execute.idle then host.running = proxy.startup_process(host.execute) end
   end
-  return server
+  return hosts
 end
 
 local function load_config(path)
@@ -308,18 +309,19 @@ local function load_config(path)
   collectgarbage()
   local config = assert(json.decode(assert(wtk.io.file(path, "rb")):read("*all")))
   for _, server in ipairs(config.servers) do
+    local hosts = decode_hosts(server.hosts)
     for _, http in ipairs(arrayify(server.http)) do
       local bind, port = http:match("^([^:]+):([^:]+)$")
       if port == 80 then add_acme = false end
       assert(bind, "can't decode bind " .. http)
       if port then port = tonumber(port) end
-      table.insert(proxy.servers, decode_hosts(Server.new(merge(args, { port = port, host = bind, hosts = server.hosts, handler = handler }, proxy))):add(loop))
+      table.insert(proxy.servers, Server.new(merge(args, { port = port, host = bind, hosts = hosts, handler = handler }, proxy)):add(loop))
     end
     for _, https in ipairs(arrayify(server.https)) do
       local bind, port = https:match("^([^:]+):([^:]+)$")
       assert(bind, "can't decode bind " .. https)
       if port then port = tonumber(port) end
-      table.insert(proxy.servers, decode_hosts(Server.new(merge(args, { port = port, host = bind, ssl = true, hosts = server.hosts, handler = handler }, proxy))):add(loop))
+      table.insert(proxy.servers, Server.new(merge(args, { port = port, host = bind, ssl = true, hosts = hosts, handler = handler }, proxy)):add(loop))
     end
   end
   if add_acme then table.insert(proxy.servers, Server.new(merge(args, { name = "ACME Server", port = 80, host = "0.0.0.0", handler = handler })):add(loop)) end
@@ -350,17 +352,19 @@ if args.acme then
   proxy.acme = ACME.new({ token = function(domain, token, body)
     if not proxy.challenges[domain] then proxy.challenges[domain] = {} end
     proxy.challenges[domain][token] = body
-  end, lenience = 30*24*60*60, directory = "./.acme", test = true, log = proxy.log })
+  end, lenience = 30*24*60*60, configdir = "./.acme", test = true, log = proxy.log })
   assert(args.acme:match("%w@%w+%.%w+"), "--acme should take an email")
   loop:job(function() 
+    proxy.log:info("Initializing ACME loop...")
     while true do
-      proxy.log:info("Initializing ACME loop...")
-      if not system.stat(proxy.acme.directory) then assert(system.mkdir(proxy.acme.directory)) end
-      local key_path = proxy.acme.directory .. "/lets-encrypt.key"
-      local certificate_directory_path = proxy.acme.directory .. "/certificates"
+      proxy.log:info("Performing SSL ACME check...")
+      if not system.stat(proxy.acme.configdir) then assert(system.mkdir(proxy.acme.configdir)) end
+      local key_path = proxy.acme.configdir .. "/lets-encrypt.key"
+      local certificate_directory_path = proxy.acme.configdir .. "/certificates"
       if not system.stat(key_path) then 
-        proxy.log:info("Generating ACME private key, storing at %s.", key_path)
-        proxy.acme.private_key = proc.run(function() local private_key = assert(ACME.keypair()) io.stdout:write(private_key):close() end)
+        proxy.log:info("Generating ACME private key, storing at %s (this can take a while on slower systems)...", key_path)
+        proxy.acme.private_key = assert(proc.run(function() local private_key = assert(ACME.keypair()) io.stdout:write(private_key):close() end))
+        proxy.log:info("ACME private key generated at %s.", key_path)
         assert(wtk.io.file(key_path, "wb")):write(proxy.acme.private_key):close()
       else
         proxy.acme.private_key = assert(wtk.io.file(key_path, "rb")):read("*all")
@@ -384,6 +388,7 @@ if args.acme then
           end
         end
       end
+      proxy.log:info("SSL ACME check loop complete.")
       coroutine.yield(60*60)
     end
   end):fail(function(err) 

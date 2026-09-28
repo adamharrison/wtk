@@ -25,8 +25,7 @@ static int f_proc_new(lua_State* L) {
     int stdin_pipe[2];
     if (pipe(stdout_pipe) || pipe(stderr_pipe) || pipe(stdin_pipe))
         return luaL_error(L, "error creating pipes");
-    if (lua_type(L, 1) != LUA_TTABLE && lua_type(L, 1) != LUA_TFUNCTION)
-        return luaL_error(L, "bad argument #1 to 'new', (table or function expected, got %s)", luaL_typename(L, 1));
+    luaL_checktype(L, 1, LUA_TFUNCTION);        
     int pid = fork();
     if (pid < 0) {   
         for (int i = 0; i < 2; ++i) {
@@ -39,70 +38,15 @@ static int f_proc_new(lua_State* L) {
         close(stdout_pipe[0]);
         close(stderr_pipe[0]);
         close(stdin_pipe[1]);
-        const char* argv[256] = {0};
-        const char* envp[256] = {0};
-        if (lua_type(L, 1) == LUA_TTABLE) {
-            size_t len = lua_rawlen(L, 1);
-            for (int i = 1; i <= len && i < 256; ++i) {
-                lua_rawgeti(L, 1, i);
-                argv[i - 1] = lua_tostring(L, -1);
-                lua_pop(L, 1);
-            }
-        }
         dup2(stdin_pipe[0], 0);
         dup2(stdout_pipe[1], 1);
         dup2(stderr_pipe[1], 2);
-        if (lua_type(L, 2) == LUA_TTABLE) {
-            lua_getfield(L, 2, "env");
-            if (!lua_isnil(L, -1)) {
-                size_t len = lua_rawlen(L, -1);
-                for (int i = 1; i <= len && i < 256; ++i) {
-                    lua_rawgeti(L, -1, i);
-                    envp[i - 1] = lua_tostring(L, -1);
-                    lua_pop(L, 1);
-                }
-            }
-            lua_pop(L, 1);
-            lua_getfield(L, 2, "wd");
-            if (!lua_isnil(L, -1)) {
-                if (chdir(lua_tostring(L, -1))) {
-                    fprintf(stderr, "error chdiring process at %s: %s", argv[0], strerror(errno));
-                    fflush(stderr);
-                    exit(-1);
-                }
-            }
-            lua_pop(L, 1);
-            lua_getfield(L, 2, "uid");
-            if (!lua_isnil(L, -1)) {
-                int uid = 0;
-                if (lua_type(L, -1) == LUA_TSTRING)  {
-                    struct passwd* pass = getpwnam(lua_tostring(L, -1));
-                    if (pass)
-                        uid = pass->pw_uid;
-                } else 
-                    uid = lua_tointeger(L, -1);
-                if (!uid || setuid(lua_tointeger(L, -1))) {
-                    fprintf(stderr, "error setuid process at %s: %s", argv[0], strerror(errno));
-                    fflush(stderr);
-                    exit(-1);
-                }
-            }
-            lua_pop(L, 1);
-        }
-        if (lua_type(L, 1) == LUA_TTABLE) {
-            execvpe(argv[0], (char* const*)argv, (char* const*)envp);
-            fprintf(stderr, "error opening process at %s: %s", argv[0], strerror(errno));
+        if (lua_pcall(L, 0, 0, 0)) {
+            fprintf(stderr, "%s", lua_tostring(L, -1));
             fflush(stderr);
             exit(-1);
-        } else if (lua_type(L, 1) == LUA_TFUNCTION) {
-            lua_pushvalue(L, 1);
-            if (lua_pcall(L, 0, 0, 0)) {
-                fprintf(stderr, "error in forked function: %s", lua_tostring(L, -1));
-                fflush(stderr);
-                exit(-1);
-            }
-            exit(0);
         }
+        exit(0);
     }
     close(stdout_pipe[1]);
     close(stderr_pipe[1]);
@@ -129,6 +73,57 @@ static int f_proc_new(lua_State* L) {
     return 1;
 }
 
+static int f_proc_chdir(lua_State* L) {
+	if (chdir(luaL_checkstring(L, 1))) {
+		lua_pushnil(L);
+		lua_pushstring(L, strerror(errno));
+		return 2;
+	}
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
+static int f_proc_setuid(lua_State* L) {
+    int uid = -1;
+    if (lua_type(L, 1) == LUA_TSTRING)  {
+        struct passwd* pass = getpwnam(lua_tostring(L, -1));
+        if (pass)
+            uid = pass->pw_uid;
+    } else 
+        uid = lua_tointeger(L, -1);
+    if (uid == -1 || setuid(lua_tointeger(L, -1))) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "error setuid process: %s", strerror(errno));
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int f_proc_exec(lua_State* L) {
+    const char* argv[256] = {0};
+    const char* envp[256] = {0};
+    if (lua_type(L, 1) == LUA_TTABLE) {
+        size_t len = lua_rawlen(L, 1);
+        for (int i = 1; i <= len && i < 256; ++i) {
+            lua_rawgeti(L, 1, i);
+            argv[i - 1] = lua_tostring(L, -1);
+            lua_pop(L, 1);
+        }
+    }
+    if (!lua_isnil(L, 2)) {
+        size_t len = lua_rawlen(L, 2);
+        for (int i = 1; i <= len && i < 256; ++i) {
+            lua_rawgeti(L, 2, i);
+            envp[i - 1] = lua_tostring(L, -1);
+            lua_pop(L, 1);
+        }
+    }
+    execvpe(argv[0], (char* const*)argv, (char* const*)envp);
+    lua_pushnil(L);
+    lua_pushfstring(L, "error opening process at %s: %s", argv[0], strerror(errno));
+    return 2;
+}
 
 static int f_proc_gc(lua_State* L) {
     lua_getfield(L, 1, "pid");
@@ -167,28 +162,24 @@ static int f_proc_status(lua_State* L) {
 static const luaL_Reg f_proc_api[] = {
     { "__gc",      f_proc_gc       },
     { "__new",     f_proc_new      },
+    { "setuid",    f_proc_setuid   },
+    { "chdir",     f_proc_chdir    },
+    { "exec",      f_proc_exec     },
     { "status",    f_proc_status   },
     { "kill",      f_proc_kill     },
     { NULL,        NULL            }
 };
 
-#define luaW_defsignal(SIGNAL) lua_pushinteger(L, SIG##SIGNAL), lua_setfield(L, -2, #SIGNAL)
 int luaopen_wtk_proc_c(lua_State* L) {
     luaL_newmetatable(L, "wtk.proc.c");
     luaL_setfuncs(L, f_proc_api, 0);
-    lua_newtable(L);
-    luaW_defsignal(KILL), luaW_defsignal(TERM), luaW_defsignal(INT), luaW_defsignal(ABRT), luaW_defsignal(ALRM),
-        luaW_defsignal(BUS), luaW_defsignal(CHLD), luaW_defsignal(CONT), luaW_defsignal(FPE), luaW_defsignal(HUP),
-        luaW_defsignal(ILL), luaW_defsignal(PIPE), luaW_defsignal(QUIT), luaW_defsignal(SEGV), luaW_defsignal(STOP),
-        luaW_defsignal(TSTP), luaW_defsignal(TTIN), luaW_defsignal(TTOU), luaW_defsignal(SYS), luaW_defsignal(TRAP);
-    lua_setfield(L, -2, "signals");
     if (luaW_loadblock(L, __FILE__, __LINE__, "\n\
     local proc, stream = ...\n\
     local wtk = require 'wtk'\n\
     proc.__index = proc\n\
     proc.__stream = stream\n\
     local _kill = proc.kill\n\
-    function proc:kill(sig) return _kill(self, type(sig) == 'string' and self.signals[sig] or sig) end\n\
+    function proc:kill(sig) return _kill(self, sig) end\n\
     function proc:term(timeout)\n\
         if not self:status() then self:kill('TERM') end\n\
         if not self:status() then coroutine.yield(timeout) end\n\
@@ -206,7 +197,15 @@ int luaopen_wtk_proc_c(lua_State* L) {
     end\n\
     function proc.new(prog, options)\n\
         if options and options.env then local t = {} for k,v in pairs(options.env) do table.insert(t, k .. '=' .. v) end options.env = t end\n\
-        local p = proc.__new(type(prog) == 'string' and { os.getenv('SHELL') or 'sh', '-c', prog } or prog, options)\n\
+        local p = proc.__new(function()\n\
+            if options and options.wd ~= nil then assert(proc.chdir(options.wd)) end\n\
+            if options and options.uid ~= nil then assert(proc.setuid(options.uid)) end\n\
+            if type(prog) == 'function' then\n\
+                prog()\n\
+            else\n\
+                assert(proc.exec(type(prog) == 'string' and { os.getenv('SHELL') or 'sh', '-c', prog } or prog, options and options.env or {}))\n\
+            end\n\
+        end)\n\
         if options and options.stdin == false then p.stdin:close() end\n\
         if options and options.stdin ~= nil then p.stdin:print(options.stdin) p.stdin:close() end\n\
         if options and options.stderr == false then p.stderr:close() end\n\

@@ -345,7 +345,7 @@ function Server.new(t)
   local self = setmetatable(merge({
     socket = socket.bind(t.host or "0.0.0.0", t.port or (t.debug and 8080 or 80)),
     mimes = { ["svg"] = "image/svg+xml", ["jpeg"] = "image/jpeg", ["jpg"] = "image/jpeg", ["png"] = "image/png", ["gif"] = "image/gif", ["js"] = "text/javascript", ["html"] = "text/html", ["css"] = "text/css", ["txt"] = "text/plain" },
-    codes = { [101] = "Switching Protocols", [200] = "OK", [201] = "Created", [204] = "No Content", [206] = "Partial Content", [301] = "Moved Permanently", [302] = "Found", [400] = "Bad Request", [403] = "Forbidden", [404] = "Not Found", [500] = "Internal Server Error" },
+    codes = { [101] = "Switching Protocols", [200] = "OK", [201] = "Created", [204] = "No Content", [206] = "Partial Content", [301] = "Moved Permanently", [302] = "Found", [400] = "Bad Request", [403] = "Forbidden", [404] = "Not Found", [500] = "Internal Server Error", [502] = "Bad Gateway", [504] = "Gateway Timeout" },
     routes = { GET = { }, POST = { }, PUT = { }, DELETE = { } },
     log = Server.Log.new(t.verbose),
     templates = {},
@@ -382,7 +382,8 @@ function Server:accept()
   if socket then 
     assert(self.clients < self.max_simultaneous_connections, "too many simultaneous connections")
     local client = Server.Client.new(self, socket)
-    self.log:verbose("Incoming connection from '%s'", select(4, socket:peer()))
+    local protocol, incoming_bind, incoming_port, peer_host = socket:peer()
+    self.log:verbose("Incoming connection from '%s' on %s:%d", peer_host, incoming_bind, incoming_port or 0)
     self.clients = self.clients + 1
     client.job = self.loop:job(function()
       while not client.closed do
@@ -399,7 +400,6 @@ function Server:accept()
           end
         end, function(err)
           try(function()
-            print(err.stack)
             self:error_handler(request, err.error, client, err)
           end, function(err)
             self.log:error("Error in error handler: %s\n%s", err.error, err.stack)
