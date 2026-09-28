@@ -11832,7 +11832,7 @@ int luaopen_wtk_client_c(lua_State* L) {
       local protocol, hostname, implied_port, explicit_port, remainder = socket.componentsURI(options.url)\n\
       local lines = {}\n\
       local bytes_written, err\n\
-      table.insert(lines, string.format(\"%s %s HTTP/1.1\", options.method, remainder or '/'))\n\
+      table.insert(lines, string.format(\"%s %s HTTP/1.1\", options.method, ((options.path and socket.escapeURI(options.path)) or remainder or '/')))\n\
       for k, v in pairs(options.headers) do table.insert(lines, k .. ':' .. v) end\n\
       table.insert(lines, '')\n\
       table.insert(lines, '')\n\

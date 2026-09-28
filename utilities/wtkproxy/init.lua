@@ -173,10 +173,10 @@ end
 
 function Server.Request:forward(uri, options)
   if not options then options = {} end
-  local PACKET_SIZE = options.chunk or 4096
-  local protocol, hostname, port = Client.componentsURI(uri)
+  local PACKET_SIZE = options.chunk or 1024
+  local protocol, hostname, port, url = Client.componentsURI(uri)
   local agent = assert(Client:open(assert(protocol, "unable to parse uri: " .. uri), hostname, port), { code = 502 })
-  local res = agent:request({ method = options.method or self.method, url = uri, headers = self.headers or {}, body = options.method ~= "GET" and options.method ~= "HEAD" and function() return self:read(PACKET_SIZE) end })
+  local res = agent:request({ method = options.method or self.method, url = uri, path = self.path, headers = self.headers or {}, body = options.method ~= "GET" and options.method ~= "HEAD" and function() return self:read(PACKET_SIZE) end })
   if res.code == 101 and res.headers.upgrade == "websocket" then 
     self:respond(Server.Response.new(options.code or res.code, res.headers))
     -- shuttle data back and forth
@@ -241,8 +241,8 @@ proxy.challenges = {}
 function proxy.startup_process(execute)
   proxy.log:info("Spinning up executable for %s.", execute.bin[1])
   local process = proc.new(assert(execute.bin, "missing bin option"), { wd = execute.wd, uid = execute.user })
-  loop:job(function() while true do local chunk = process.stdout:read(4096) if chunk then io.stdout:write(chunk) else if process:status() then break end process.stdout:yield() end end end)
-  loop:job(function() while true do local chunk = process.stderr:read(4096) if chunk then io.stderr:write(chunk) else if process:status() then break end process.stderr:yield() end end end)
+  loop:job(function() while true do local chunk = process.stdout:read(1024) if chunk then io.stdout:write(chunk) else if process:status() then break end process.stdout:yield() end end end)
+  loop:job(function() while true do local chunk = process.stderr:read(1024) if chunk then io.stderr:write(chunk) else if process:status() then break end process.stderr:yield() end end end)
   return process
 end
 
@@ -318,9 +318,9 @@ local function load_config(path)
     local hosts = decode_hosts(server.hosts)
     for _, http in ipairs(arrayify(server.http)) do
       local bind, port = http:match("^([^:]+):([^:]+)$")
-      if port == 80 then add_acme = false end
       assert(bind, "can't decode bind " .. http)
       if port then port = tonumber(port) end
+      if port == 80 then add_acme = false end
       table.insert(proxy.servers, Server.new(merge(args, { port = port, host = bind, hosts = hosts, handler = proxy.handler }, proxy)):add(loop))
     end
     for _, https in ipairs(arrayify(server.https)) do

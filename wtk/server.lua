@@ -224,7 +224,7 @@ function Request:file(path, headers)
   end
   return self:respond(self.headers['range'] and 206 or 200, headers, function() 
     if s >= e then return nil end
-    local chunk = f:read(math.min(512*1024, e - s)) 
+    local chunk = f:read(math.min(4*1024, e - s)) 
     if not chunk then return nil end
     s = s + #chunk
     return chunk
@@ -344,7 +344,7 @@ function Server.Client:handshake() end
 function Server.new(t) 
   local self = setmetatable(merge({
     socket = socket.bind(t.host or "0.0.0.0", t.port or (t.debug and 8080 or 80)),
-    mimes = { ["svg"] = "image/svg+xml", ["jpeg"] = "image/jpeg", ["jpg"] = "image/jpeg", ["png"] = "image/png", ["gif"] = "image/gif", ["js"] = "text/javascript", ["html"] = "text/html", ["css"] = "text/css", ["txt"] = "text/plain" },
+    mimes = { ["svg"] = "image/svg+xml", ["jpeg"] = "image/jpeg", ["jpg"] = "image/jpeg", ["webp"] = "image/webp", ["png"] = "image/png", ["gif"] = "image/gif", ["js"] = "text/javascript", ["html"] = "text/html", ["css"] = "text/css", ["txt"] = "text/plain" },
     codes = { [101] = "Switching Protocols", [200] = "OK", [201] = "Created", [204] = "No Content", [206] = "Partial Content", [301] = "Moved Permanently", [302] = "Found", [400] = "Bad Request", [403] = "Forbidden", [404] = "Not Found", [500] = "Internal Server Error", [502] = "Bad Gateway", [504] = "Gateway Timeout" },
     routes = { GET = { }, POST = { }, PUT = { }, DELETE = { } },
     log = Server.Log.new(t.verbose),
