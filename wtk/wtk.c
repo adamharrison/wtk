@@ -529,7 +529,7 @@ int luaopen_wtk_c(lua_State* L) {
 		if coroutine.status(job.co) ~= 'dead' then\n\
 			local results = { select(2, assert(coroutine.resume(job.co, job))) }\n\
 			if coroutine.status(job.co) ~= 'dead' then\n\
-				local index = 0\n\
+				local index = 1\n\
 				for _, result in ipairs(results) do\n\
 					if result and (type(result) ~= 'number' or result > 0) then\n\
 						if type(result) == 'number' then \n\
@@ -547,17 +547,18 @@ int luaopen_wtk_c(lua_State* L) {
 						index = index + 1\n\
 					end\n\
 				end\n\
-				for i = #job.waiting, index + 1, -1 do\n\
+				for i = #job.waiting, index, -1 do\n\
 					self:rm(job.waiting[i].fd)\n\
 					job.waiting[i] = nil\n\
 				end\n\
-				if index == 0 then\n\
+				if index == 1 then\n\
 					self:add(function() self:job_step(job) end)\n\
 				end\n\
 			end\n\
 		end\n\
 		if coroutine.status(job.co) == 'dead' and #job.waiting > 0 then \n\
-			for i,v in ipairs(job.waiting) do self:rm(v.fd) end job.waiting {}\n\
+			for i,v in ipairs(job.waiting) do self:rm(v.fd) end\n\
+			job.waiting = {}\n\
 		end\n\
 		return job\n\
 	end\n\
@@ -644,7 +645,7 @@ int luaopen_wtk_c(lua_State* L) {
 			end\n\
 	end\n\
 	function wtk.Loop:signal(signal, func) if not self.signals then self.signals = {} self:add(SIGNALFD[0], function() self.signals[SIGNALFD:read(1):byte(1)]() end) end SIGNAL(signal) self.signals[signal] = func end\n\
-	function wtk.Loop:job(func) return self:job_step(wtk.Promise.new({ kill = function(job) assert(coroutine.close(job.co)) self:job_step(job) job:reject('killed') end, running = function(j) return coroutine.status(j.co) ~= 'dead' end, waiting = {}, co = coroutine.create(function(job) try(function() job:resolve(func(job)) end, function(err) job:reject(err) end) end) })) end\n\
+	function wtk.Loop:job(func) return self:job_step(wtk.Promise.new({ kill = function(job) assert(coroutine.close(job.co)) self:job_step(job) job:reject('killed') end, running = function(j) return coroutine.status(j.co) ~= 'dead' end, waiting = {}, co = coroutine.create(function(job) try(function() job:resolve(func(job)) end, function(err) job:reject(err) end, function() for i,v in ipairs(job.waiting) do self:rm(v.fd) end job.waiting = {} end) end) })) end\n\
 	function wtk.Loop:await(t)\n\
 		if type(t) ~= 'table' or #t == 0 then t = { t } end\n\
 		local signal = wtk.io.pipe()\n\

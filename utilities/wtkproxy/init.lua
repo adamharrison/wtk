@@ -241,8 +241,8 @@ proxy.challenges = {}
 function proxy.startup_process(execute)
   proxy.log:info("Spinning up executable for %s.", execute.bin[1])
   local process = proc.new(assert(execute.bin, "missing bin option"), { wd = execute.wd, uid = execute.user })
-  loop:job(function() while true do local chunk = process.stdout:read(1024) if chunk then io.stdout:write(chunk) else if process:status() then break end process.stdout:yield() end end end)
-  loop:job(function() while true do local chunk = process.stderr:read(1024) if chunk then io.stderr:write(chunk) else if process:status() then break end process.stderr:yield() end end end)
+  loop:job(function() while true do local chunk = process.stdout:read(1024) if not chunk then break end io.stdout:write(chunk) end end)
+  loop:job(function() while true do local chunk = process.stderr:read(1024) if not chunk then break end io.stderr:write(chunk) end end)
   return process
 end
 
@@ -260,7 +260,7 @@ function proxy.handler(self, request)
   local location, remainder = self:get_location(host, request)
   local target = location or host
   target.last_request = os.time()
-  if target.execute and not target.running then
+  if target.execute and not target.running or target.running:status() then
     target.running = proxy.startup_process(target.execute)
     if target.execute.idle then
       loop:job(function() while true do 

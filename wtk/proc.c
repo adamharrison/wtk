@@ -128,8 +128,9 @@ static int f_proc_exec(lua_State* L) {
 static int f_proc_gc(lua_State* L) {
     lua_getfield(L, 1, "pid");
     int pid = luaL_checkinteger(L, -1);
-    kill(pid, SIGKILL);
     int status;
+    if (waitpid(pid, &status, WNOHANG) <= 0 || !WIFEXITED(status))
+        kill(pid, SIGKILL);
     waitpid(pid, &status, 0);
     return 0;
 }
