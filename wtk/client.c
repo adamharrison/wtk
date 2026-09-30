@@ -11746,7 +11746,7 @@ int luaopen_wtk_client_c(lua_State* L) {
       local protocol, hostname, port, url = url:match('^(%w+)://([^/:]+):?(%d*)(.*)$')\n\
       return protocol, hostname, (not port or port == '') and (protocol == 'https' and 443 or 80) or tonumber(port), (port and port ~= '') and port or nil, (not url or url == '' and '/' or url)\n\
     end\n\
-    function socket.escapeURI(param) return param:gsub(\"[^A-Za-z0-9%-_%.%!~%*'%(%)]\", function(e) return string.format('%%%02x', e:byte(1)) end) end\n\
+    function socket.escapeURI(param) return param:gsub(\"[^A-Za-z0-9%-_%.%!~%*'%(%)%/]\", function(e) return string.format('%%%02x', e:byte(1)) end) end\n\
     \n\
     function socket:read(bytes, blocking, exact)\n\
       if bytes == '*l' then\n\
@@ -11836,14 +11836,18 @@ int luaopen_wtk_client_c(lua_State* L) {
       for k, v in pairs(options.headers) do table.insert(lines, k .. ':' .. v) end\n\
       table.insert(lines, '')\n\
       table.insert(lines, '')\n\
-      bytes_written, err = self:write(table.concat(lines, '\\r\\n'))\n\
+      lines = table.concat(lines, '\\r\\n')\n\
+      if options.log then options.log(lines, 'write') end\n\
+      bytes_written, err = self:write(lines)\n\
       if not bytes_written then return nil, err end\n\
       if type(options.body) == 'function' then \n\
         for chunk in options.body do \n\
+					if options.log then options.log(lines, 'write') end\n\
 					bytes_written, err = self:write(chunk) \n\
 					if not bytes_written then return nil, err end\n\
 				end \n\
       elseif options.body then\n\
+				if options.log then options.log(options.body, 'write') end\n\
         bytes_written, err = self:write(options.body)\n\
         if not bytes_written then return nil, err end\n\
       end\n\
@@ -11867,6 +11871,7 @@ int luaopen_wtk_client_c(lua_State* L) {
         end\n\
         local chunk, err = self:recv(4096, not coroutine.isyieldable())\n\
         if not chunk then return nil, err end\n\
+				if options.log then options.log(chunk, 'read') end\n\
         self.retained = self.retained .. chunk\n\
       end\n\
       return res\n\

@@ -87,6 +87,7 @@ local loop = wtk.Loop.new()
 local args = wtk.pargs({ ... }, {
   help = "flag",
   version = "flag",
+  quiet = "flag",
   verbose = "flag",
   vverbose = "flag",
   debug = "flag",
@@ -251,6 +252,7 @@ end
 local proxy = {}
 proxy.agent = Client.new({ cookies = false })
 proxy.log = Server.Log.new(args.verbose)
+if args.quiet then proxy.log.log = function() end end
 proxy.servers = {}
 proxy.challenges = {}
 

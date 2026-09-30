@@ -128,6 +128,7 @@ Request.__index = Request
 function Request.new(client) 
   return setmetatable({ method = nil, client = client, path = nil, version = nil, headers = {}, buffer = {}, cookies = {}, responded = false, length_read = 0 }, Request) 
 end
+function Request:__tostring() local s = {} table.insert(s, string.format("%s %s %s\r\n", self.method, self.path, self.version)) for k,v in pairs(self.headers) do table.insert(s, string.format("%s:%s",k,v)) end return table.concat(s, "\r\n") .. "\r\n" .. (self:body() or "") end
 function Request:parse_form(form)
   local params = {}
   for key,value in (form or self:body()):gmatch("([^=&%?]+)=([^&]+)") do 
