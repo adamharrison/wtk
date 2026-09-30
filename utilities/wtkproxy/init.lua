@@ -101,72 +101,70 @@ if args.vverbose then args.verbose = true end
 if args.version then
   io.stdout:write(VERSION .. "\n")
   os.exit(0)
-elseif args.help then
+elseif args.help or (not args.config and #args == 0) then
   io.stderr:write([[
 wtkproxy - A medium-performance proxy server.
 
-Listens on a specified port for incoming HTTP requests, 
+Listens on a specified port for incoming HTTP(s) requests.
 
 The following options are available:
 
-  --host                host to listen on, by default 0.0.0.0.
-  --port                port to listen on; can be either a path or integer
   --version             show the version
   --[v]verbose          become verbose
   --debug               enables debug mode
   --config              read and follow specified configuration a-la-nginx
-  --live                monitor the config file for changes, and autoamtically reload on modification
+  --live                monitor the config file for changes, and automatically reload on modification
   --acme                uses the ACME protocol to generate/renew certificates as needed for those servers don't have one; takes an email
   --help                show the help
 
-  In order to handle requests, you have a two options.
+In order to handle requests, you have a two options.
 
-  If you want to use a config, you can have a JSON config file that looks something like this:
+If you want to use a config, you can have a JSON config file that looks something like this:
 
-  {
-    "servers": [
-      {
-        "http": ["0.0.0.0:80"],
-        "https": ["0.0.0.0:443"],
-        "hosts": [{
-          "hostname": ["www.test.com", "test.com"],
-          "ssl": {
-            "key_path": "/var/www/server/key.key",
-            "cert_path": "/var/www/server/cert.crt"
-          },
-          "forward": "http://127.0.0.1:5888",
-          "execute": {
-            "bin": ["/var/www/server", "--port", "5888"],
-            "idle": 600
+{
+  "servers": [
+    {
+      "http": ["0.0.0.0:80"],
+      "https": ["0.0.0.0:443"],
+      "hosts": [{
+        "hostname": ["www.test.com", "test.com"],
+        "ssl": {
+          "key_path": "/var/www/server/key.key",
+          "cert_path": "/var/www/server/cert.crt"
+        },
+        "forward": "http://127.0.0.1:5888",
+        "execute": {
+          "bin": ["/var/www/server", "--port", "5888"],
+          "idle": 600
+        }
+      }, {
+        "hostname": ["www.test2.com", "test2.com"],
+        "ssl": true,
+        "forward": "http://127.0.0.1:4765"
+      }, {
+        "hostname": ["*.test3.com"],
+        "location": {
+          "/": {
+            "static": "/var/www/server/root"
           }
-        }, {
-          "hostname": ["www.test2.com", "test2.com"],
-          "ssl": true,
-          "forward": "http://127.0.0.1:4765"
-        }, {
-          "hostname": ["*.test3.com"],
-          "location": {
-            "/": {
-              "static": "/var/www/server/root"
-            }
-          }
-        }, {
-          "hostname": ["*.test4.com"],
-          "handler": "request:forward('http://127.0.0.1', { headers = { ['X-Forwarded-For'] = request.client.peer } }):set_headers({ ['X-Responding-Server'] = '127.0.0.1' })"
-        }]
-      }
-    ]
-  }
+        }
+      }, {
+        "hostname": ["*.test4.com"],
+        "handler": "request:forward('http://127.0.0.1', { headers = { ['X-Forwarded-For'] = request.client.peer } }):set_headers({ ['X-Responding-Server'] = '127.0.0.1' })"
+      }]
+    }
+  ]
+}
 
-  If you do not specify a handler, or a config, wtkproxy will interpret the comamnd command line.
-  You can specify things exactly as in the server; separate servers with --server, and specify all keys at the server and host level with --key.
-  The above config can be replicated by doing:
+If you do not specify a handler, or a config, wtkproxy will interpret the comamnd command line.
+You can specify things exactly as in the server; separate servers with --server, and specify all keys at the server and host level with --key.
+The above config can be replicated by doing:
 
-  wtkproxy --http 80 --https 443
-    --host --hostname www.test.com test.com --ssl.key_path /var/www/server/key.key --ssl.cert_path /var/www/server/cert.crt --forward 'http://127.0.0.1:5888' --execute.bin "/var/www/server \\--port 5888" --execute.idle 600 
-    --host --hostname www.test2.com test2.com --ssl true --forward 'http://127.0.0.1:4765'
-    --host --hostname '*.test3.com' --location / --static /var/www/server/root
-    --host --hostname '*.test4.com' --handler "request:forward('http://127.0.0.1', { headers = { ['X-Forwarded-For'] = request.client.peer } }):set_headers({ ['X-Responding-Server'] = '127.0.0.1' })"
+wtkproxy --http 80 --https 443
+  --host --hostname www.test.com test.com --ssl.key_path /var/www/server/key.key --ssl.cert_path /var/www/server/cert.crt --forward 'http://127.0.0.1:5888' --execute.bin "/var/www/server \\--port 5888" --execute.idle 600 
+  --host --hostname www.test2.com test2.com --ssl true --forward 'http://127.0.0.1:4765'
+  --host --hostname '*.test3.com' --location / --static /var/www/server/root
+  --host --hostname '*.test4.com' --handler "request:forward('http://127.0.0.1', { headers = { ['X-Forwarded-For'] = request.client.peer } }):set_headers({ ['X-Responding-Server'] = '127.0.0.1' })"
 ]])
   os.exit(0)
 end
@@ -314,7 +312,7 @@ function proxy.handler(self, request)
     return request:redirect(target.redirect)
   elseif target.code then
     self.log:verbose("Responding with code %d.", target.code)
-    return request:respond(target.code, target.headers, target.body)
+    return request:respond(tonumber(target.code), target.headers, target.body)
   else
     self.log:verbose("Unknown target action.", target.code)
     error({ code = 404 })
@@ -379,6 +377,7 @@ local function load_config(config)
     end
   end
   if add_acme then table.insert(proxy.servers, Server.new(merge(args, { name = "ACME Server", port = 80, host = "0.0.0.0", handler = proxy.handler })):add(loop)) end
+  assert(#proxy.servers > 0, "you have listed no active servers")
 end
 
 local function load_config_path(path)
