@@ -259,8 +259,9 @@ function proxy.handler(self, request)
   local host = assert(self:get_host(request.headers.host), { code = 404, message = "can't find host " .. (request.headers.host or "unknown") })
   local location, remainder = self:get_location(host, request)
   local target = location or host
+  local path = remainder or request.path
   target.last_request = os.time()
-  if target.execute and not target.running or target.running:status() then
+  if target.execute and (not target.running or target.running:status()) then
     target.running = proxy.startup_process(target.execute)
     if target.execute.idle then
       loop:job(function() while true do 
@@ -281,8 +282,10 @@ function proxy.handler(self, request)
     self.log:verbose("Forwarding request to %s...", target.forward)
     return request:forward(target.forward, target)
   elseif target.static then
-    return request:file(target.static .. remainder, target.headers)
+    self.log:verbose("Serving static file %s.", target.static .. path)
+    return request:file(target.static .. path, target.headers)
   elseif target.code then
+    self.log:verbose("Responding with code %d.", target.code)
     return request:respond(target.code, target.headers, target.body)
   else
     error({ code = 404 })
