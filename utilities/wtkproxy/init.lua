@@ -88,6 +88,7 @@ local args = wtk.pargs({ ... }, {
   help = "flag",
   version = "flag",
   verbose = "flag",
+  vverbose = "flag",
   debug = "flag",
   config = "string",
   console = "flag",
@@ -97,6 +98,7 @@ local args = wtk.pargs({ ... }, {
   live = "flag",
   handler = "string"
 })
+if args.vverbose then args.verbose = true end
 if args.version then
   io.stdout:write(VERSION .. "\n")
   os.exit(0)
@@ -111,6 +113,7 @@ The following options are available:
   --host                host to listen on, by default 0.0.0.0.
   --port                port to listen on; can be either a path or integer
   --version             show the version
+  --[v]verbose          become verbose
   --debug               enables debug mode
   --config              read and follow specified configuration a-la-nginx
   --live                monitor the config file for changes, and autoamtically reload on modification
@@ -123,7 +126,7 @@ The following options are available:
 
   Example handlers are:
 
-  return request:forward("http://127.0.0.1", { headers = { ["X-Forwarded-For"] = request.client.peer } }):set_headers({ ["X-Responding-Server"] = "127.0.0.1" })
+  request:forward("http://127.0.0.1", { headers = { ["X-Forwarded-For"] = request.client.peer } }):set_headers({ ["X-Responding-Server"] = "127.0.0.1" })
 
   If you want to use a config, you can have a JSON config file that looks something like this:
 
@@ -176,7 +179,21 @@ function Server.Request:forward(uri, options)
   local PACKET_SIZE = options.chunk or 1024
   local protocol, hostname, port, url = Client.componentsURI(uri)
   local agent = assert(Client:open(assert(protocol, { code = 400, message = "unable to parse uri: " .. uri }), hostname, port), { code = 502 })
-  local res = agent:request({ method = options.method or self.method, url = uri, path = self.path, headers = self.headers or {}, body = options.method ~= "GET" and options.method ~= "HEAD" and function() return self:read(PACKET_SIZE) end })
+  local headers = merge(self.headers or {}, {})
+  if not options.suppress_forwards then
+    headers['x-forwarded-host'] = self.headers.host
+    headers['x-forwarded-for'] = self.client.peer
+    headers['x-forwarded-proto'] = self.client.server.host and self.client.server.host:find("^unix://") and "unix" or (self.client.server.ssl and "https" or "http")
+    headers['host'] = nil
+  end
+  local res = agent:request({ 
+    log = self.client.server.vverbose and function(chunk, direction) self.client.server.log:verbose("%s %s", direction == "write" and ">" or "<", chunk) end, 
+    method = options.method or self.method, 
+    url = uri, 
+    path = self.path,
+    headers = headers,
+    body = options.method ~= "GET" and options.method ~= "HEAD" and function() return self:read(PACKET_SIZE) end 
+  })
   if res.code == 101 and res.headers.upgrade == "websocket" then 
     self.server.log:verbose("Request forward transforming to websocket.")
     self:respond(Server.Response.new(options.code or res.code, res.headers))
@@ -315,7 +332,7 @@ local function load_config(path)
   proxy.log:info("Loading configuration from %s...", path)
   for i, server in ipairs(proxy.servers) do 
     server:stop(loop)
-    for _, host in server.hosts do
+    for _, host in ipairs(server.hosts) do
       if host.running then host.running:term(5) host.running = nil end
     end
   end
@@ -343,7 +360,7 @@ end
 
 if args.config then 
   load_config(args.config)
-  loop:signal(SIGHUP, function() load_config(args.config) end)
+  loop:signal(SIGHUP, function() proxy.log:info("Received SIGHUP, reloading config.") load_config(args.config) end)
   if args.live then
     loop:job(function() 
       local mtime = assert(system.stat(args.config), "can't find config file").mtime
