@@ -92,11 +92,9 @@ local args = wtk.pargs({ ... }, {
   debug = "flag",
   config = "string",
   console = "flag",
-  host = "string",
-  port = "string",
   acme = "string",
   live = "flag",
-  handler = "string"
+  run = "flag"
 })
 if args.vverbose then args.verbose = true end
 if args.version then
@@ -120,13 +118,7 @@ The following options are available:
   --acme                uses the ACME protocol to generate/renew certificates as needed for those servers don't have one; takes an email
   --help                show the help
 
-  In order to forward requests, you have a couple options.
-  
-  --handler function        specifies a lua file, or a lua chunk that routes the request
-
-  Example handlers are:
-
-  request:forward("http://127.0.0.1", { headers = { ["X-Forwarded-For"] = request.client.peer } }):set_headers({ ["X-Responding-Server"] = "127.0.0.1" })
+  In order to handle requests, you have a two options.
 
   If you want to use a config, you can have a JSON config file that looks something like this:
 
@@ -151,28 +143,33 @@ The following options are available:
           "ssl": true,
           "forward": "http://127.0.0.1:4765"
         }, {
-          "hostname": [".*%.test3%.com"],
+          "hostname": ["*.test3.com"],
           "location": {
             "/": {
               "static": "/var/www/server/root"
             }
           }
+        }, {
+          "hostname": ["*.test4.com"],
+          "handler": "request:forward('http://127.0.0.1', { headers = { ['X-Forwarded-For'] = request.client.peer } }):set_headers({ ['X-Responding-Server'] = '127.0.0.1' })"
         }]
       }
     ]
   }
+
+  If you do not specify a handler, or a config, wtkproxy will interpret the comamnd command line.
+  You can specify things exactly as in the server; separate servers with --server, and specify all keys at the server and host level with --key.
+  The above config can be replicated by doing:
+
+  wtkproxy --http 80 --https 443
+    --host --hostname www.test.com test.com --ssl.key_path /var/www/server/key.key --ssl.cert_path /var/www/server/cert.crt --forward 'http://127.0.0.1:5888' --execute.bin "/var/www/server \\--port 5888" --execute.idle 600 
+    --host --hostname www.test2.com test2.com --ssl true --forward 'http://127.0.0.1:4765'
+    --host --hostname '*.test3.com' --location / --static /var/www/server/root
+    --host --hostname '*.test4.com' --handler "request:forward('http://127.0.0.1', { headers = { ['X-Forwarded-For'] = request.client.peer } }):set_headers({ ['X-Responding-Server'] = '127.0.0.1' })"
 ]])
   os.exit(0)
 end
 
-if args.handler then
-  if args.handler:find("%.lua$") then
-    args.handler = assert(loadfile(args.handler))()
-    assert(type(args.handler) == 'function', "Map file does not return a function.")
-  else
-    args.handler = assert(load("return function(server, request) " .. args.handler .. " end", "=handler"))()
-  end
-end
 
 function Server.Request:forward(uri, options)
   if not options then options = {} end
@@ -209,9 +206,10 @@ end
 
 function Server:get_host(host)
   host = host:gsub(":.*$", "")
-  for _, server_host in ipairs(self.hosts or {}) do
-    for _, hostname in ipairs(arrayify(server_host.hostname)) do
-      hostname = hostname:gsub("%.", "%%."):gsub("%-", "%%-")
+  for _, server_host in ipairs(self.hosts) do
+    if not server_host.hostname then return server_host end
+    for _, hostname in ipairs(server_host.hostname) do
+      hostname = hostname:gsub("%.", "%%."):gsub("%-", "%%-"):gsub("%*", ".*")
       if host:find("^" .. hostname .. "$") then
         return server_host
       end
@@ -297,39 +295,60 @@ function proxy.handler(self, request)
     end
     coroutine.yield(target.spinup or 0.1)
   end
-  if target.forward then
+  if target.handler then
+    self.log:verbose("Running custom handler...")
+    return target.handler(self, request)
+  elseif target.forward then
     self.log:verbose("Forwarding request to %s...", target.forward)
     return request:forward(target.forward, target)
   elseif target.static then
-    self.log:verbose("Serving static file %s.", target.static .. path)
+    self.log:verbose("Serving static directory %s.", target.static .. path)
     return request:file(target.static .. path, target.headers)
+  elseif target.file then
+    self.log:verbose("Serving static file %s.", target.file)
+    return request:file(target.file, target.headers)
+  elseif target.redirect then
+    self.log:verbose("Redirecting to %s.", target.redirect)
+    return request:redirect(target.redirect)
   elseif target.code then
     self.log:verbose("Responding with code %d.", target.code)
     return request:respond(target.code, target.headers, target.body)
   else
+    self.log:verbose("Unknown target action.", target.code)
     error({ code = 404 })
   end
 end
 
+local function load_handler(handler)
+  if handler:find("%.lua$") then
+    handler = assert(loadfile(handler))()
+    assert(type(handler) == 'function', "Map file does not return a function.")
+  else
+    handler =  assert(load("return function(server, request) " .. handler .. " end", "=handler"))()
+  end
+  return handler
+end
+
 local function decode_hosts(hosts)
-  for i, host in ipairs(hosts) do
+  for i, host in ipairs(hosts or {}) do
     if host.ssl then
       if host.ssl == true then host.ssl = {} end
       if not host.ssl.key and host.ssl.key_path then host.ssl.key = assert(wtk.io.file(host.ssl.key_path, "rb")):read("*all") assert(ACME.component(host.ssl.key), "key specified at " .. host.ssl.key_path .. " is invalid") end
       if not host.ssl.cert and host.ssl.cert_path then host.ssl.cert = assert(wtk.io.file(host.ssl.cert_path, "rb")):read("*all") assert(ACME.cert(host.ssl.cert), "cert specified at " .. host.ssl.cert_path .. " is invalid") end
-      if host.hostname then host.hostname = arrayify(host.hostname) end
     end
     for path, location in pairs(host.locations or {}) do
       for k,v in pairs(host) do if location[k] == nil then location[k] = v end end
     end
-    if host.execute and not host.execute.idle then host.running = proxy.startup_process(host.execute) end
+    if host.hostname then host.hostname = arrayify(host.hostname) end
+    if host.handler then host.handler = load_handler(host.handler) end
+    if host.execute and not host.execute.idle then loop:add(function() host.running = proxy.startup_process(host.execute) end) end
   end
   return hosts
 end
 
-local function load_config(path)
+
+local function load_config(config)
   local add_acme = args.acme
-  proxy.log:info("Loading configuration from %s...", path)
   for i, server in ipairs(proxy.servers) do 
     server:stop(loop)
     for _, host in ipairs(server.hosts) do
@@ -338,19 +357,21 @@ local function load_config(path)
   end
   proxy.servers = {}
   collectgarbage()
-  local config = assert(json.decode(assert(wtk.io.file(path, "rb")):read("*all")))
+  proxy.log:verbose("Loading configuration %s.", json.encode(config))
   for _, server in ipairs(config.servers) do
-    local hosts = decode_hosts(server.hosts)
+    local hosts = server.hosts and decode_hosts(server.hosts) or decode_hosts({ merge(server, { }) })
     for _, http in ipairs(arrayify(server.http)) do
-      local bind, port = http:match("^([^:]+):([^:]+)$")
+      local bind, port = http:match("^([^:]+):?([^:]-)$")
       assert(bind, "can't decode bind " .. http)
+      if not port or port == "" then port, bind = bind, "0.0.0.0" end
       if port then port = tonumber(port) end
       if port == 80 then add_acme = false end
       table.insert(proxy.servers, Server.new(merge(args, { port = port, host = bind, hosts = hosts, handler = proxy.handler }, proxy)):add(loop))
     end
     for _, https in ipairs(arrayify(server.https)) do
-      local bind, port = https:match("^([^:]+):([^:]+)$")
+      local bind, port = https:match("^([^:]+):?([^:]-)$")
       assert(bind, "can't decode bind " .. https)
+      if not port or port == "" then port, bind = bind, "0.0.0.0" end
       if port then port = tonumber(port) end
       table.insert(proxy.servers, Server.new(merge(args, { port = port, host = bind, ssl = true, hosts = hosts, handler = proxy.handler }, proxy)):add(loop))
     end
@@ -358,16 +379,97 @@ local function load_config(path)
   if add_acme then table.insert(proxy.servers, Server.new(merge(args, { name = "ACME Server", port = 80, host = "0.0.0.0", handler = proxy.handler })):add(loop)) end
 end
 
+local function load_config_path(path)
+  proxy.log:info("Loading configuration from %s...", path)
+  load_config(assert(json.decode(assert(wtk.io.file(path, "rb")):read("*all"))))
+end
+
+-- ./wtkproxy --http 80 --https 443\
+--     --host --hostname www.test.com test.com --ssl.key_path /var/www/server/key.key --ssl.cert_path /var/www/server/cert.crt --forward 'http://127.0.0.1:5888' --execute.bin /var/www/server \\--port 5888 --execute.idle 600\
+--     --host --hostname www.test2.com test2.com --ssl true --forward 'http://127.0.0.1:4765'\
+--     --host --hostname '.*%.test3%.com' --location / --static /var/www/server/root
+
+local function split(splitter, str)
+  local o = 1
+  local res = {}
+  while true do
+      local s, e = str:find(splitter, o)
+      table.insert(res, str:sub(o, s and (s - 1) or #str))
+      if not s then break end
+      o = e + 1
+  end
+  return res
+end
+local function load_arg_config(args)
+  proxy.log:info("Loading configuration from arguments...")
+  local config = { servers = {} }
+  if args[1] ~= "--server" then table.insert(args, 1, "--server") end
+  local key = nil
+  local array_keys = { server = 1, host = 2  }
+  local hash_keys = { location = 3 }
+  local target = { }
+  local function get(orig, target) for i = 1, #target do if type(target[i]) == 'string' then for _, v in ipairs(split('%.', target[i])) do if not orig[v] then orig[v] = {} end orig = orig[v] end else orig = orig[target[i]] end end return orig end
+  local function set(orig, target, value) 
+    for i = 1, #target do 
+      if type(target[i]) == 'string' then 
+        local s = split('%.', target[i])
+        for j, v in ipairs(s) do 
+          if not orig[v] then orig[v] = {} end 
+          if i == #target and j == #s  then
+            orig[v] = value
+          else
+            orig = orig[v]
+          end
+        end 
+      else 
+        orig = orig[target[i]] 
+      end 
+    end
+  end
+  for i, arg in ipairs(args) do
+    if arg:find("^%-%-") then 
+      if not hash_keys[target[#target]] and type(target[#target]) ~= "number" then table.remove(target) end
+      key = arg:sub(3) 
+      if array_keys[key] then
+        if #target < 2 or target[#target-1] ~= (key .. "s") or type(target[#target]) ~= 'number' then  
+          table.insert(target, key .. "s") 
+          set(config, target, {}) 
+        end
+        if #target >= 2 and target[#target - 1] == key .. "s" and type(target[#target]) == 'number' then
+          table.remove(target)
+        end
+        table.insert(get(config, target), {})
+        table.insert(target, #get(config, target))
+      elseif hash_keys[key] then
+        set(config, target, arg)
+      else
+        table.insert(target, key)
+      end
+    else
+      arg = arg:gsub("^\\", "")
+      local value = get(config, target)
+      if value ~= nil and type(value) ~= 'table' then
+        set(config, target, { value, arg })
+      elseif type(value) == 'table' and #value > 0 then
+        table.insert(value, arg)
+      else
+        set(config, target, arg)
+      end
+    end
+  end
+  load_config(config)
+end
+
 if args.config then 
-  load_config(args.config)
-  loop:signal(SIGHUP, function() proxy.log:info("Received SIGHUP, reloading config.") load_config(args.config) end)
+  load_config_path(args.config)
+  loop:signal(SIGHUP, function() proxy.log:info("Received SIGHUP, reloading config.") load_config_path(args.config) end)
   if args.live then
     loop:job(function() 
       local mtime = assert(system.stat(args.config), "can't find config file").mtime
       while true do
         local nmtime = assert(system.stat(args.config), "can't find config file").mtime
         if mtime < nmtime then
-          load_config(args.config)
+          load_config_path(args.config)
           mtime = nmtime
         end
         coroutine.yield(1)
@@ -375,7 +477,13 @@ if args.config then
     end)
   end
 else
-  Server.new(merge(proxy, args, { handler = handler })):add(loop)
+  try(function()
+    load_arg_config(args)
+  end, function(err)
+    print(err)
+    print(err.stack)
+    os.exit(0)
+  end)
 end
 
 
@@ -442,5 +550,4 @@ if args.acme then
   end)
 end
 
-
-loop:run()
+if args.run ~= false then loop:run() end
