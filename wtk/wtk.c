@@ -426,7 +426,7 @@ static int f_system_stat(lua_State* L) {
 	lua_newtable(L);
 	lua_pushnumber(L, file.st_mtime), lua_setfield(L, -2, "mtime");
 	lua_pushinteger(L, file.st_size), lua_setfield(L, -2, "size");
-	lua_pushstring(L, S_ISREG(file.st_mode) ? "file" : (S_ISDIR(file.st_mode) ? "dir" : "other")), lua_setfield(L, -2, "type");
+	lua_pushstring(L, S_ISREG(file.st_mode) ? "file" : (S_ISDIR(file.st_mode) ? "dir" : (S_ISSOCK(file.st_mode) ? "socket" : "other"))), lua_setfield(L, -2, "type");
 	return 1;
 }
 

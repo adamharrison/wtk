@@ -342,6 +342,7 @@ function Server.Client:yield(type) coroutine.yield({ socket = self.socket, type 
 function Server.Client:handshake() end
 
 function Server.new(t) 
+  if t.host and t.host:find("^unix://") and wtk.system.stat(t.host:sub(8)) and wtk.system.stat(t.host:sub(8)).type == "socket" then assert(os.remove(t.host:sub(8))) end
   local self = setmetatable(merge({
     socket = socket.bind(t.host or "0.0.0.0", t.port or (t.debug and 8080 or 80)),
     mimes = { ["svg"] = "image/svg+xml", ["jpeg"] = "image/jpeg", ["jpg"] = "image/jpeg", ["png"] = "image/png", ["gif"] = "image/gif", ["js"] = "text/javascript", ["html"] = "text/html", ["css"] = "text/css", ["txt"] = "text/plain" },
