@@ -11280,7 +11280,7 @@ static int socket_yield(lua_State* L, int fd, const char* type, lua_KFunction k)
   lua_setfield(L, -2, "socket");
   lua_pushstring(L, type);
   lua_setfield(L, -2, "type");
-  lua_yieldk(L, 1, 0, k);
+  return lua_yieldk(L, 1, 0, k);
 }
 
 static int socket_set_blocking(client_socket_t* c, int blocking) {
@@ -11333,10 +11333,12 @@ static int f_client_socket_recvk(lua_State* L, int status, lua_KContext ctx) {
     }
   } else {
     recvd = read(socket->fd, buf, imin(sizeof(buf), bytes));
-    if (recvd == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
+    if (recvd == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
       return socket_yield(L, socket->fd, "read", f_client_socket_recvk);
+    }
     if (recvd <= 0) {
       socket->state = STATE_CLOSED;
+      lua_pushnil(L);
       if ((recvd == -1 && errno == ECONNRESET) || recvd == 0)
 				lua_pushliteral(L, "closed");
 			else
@@ -11397,11 +11399,11 @@ static int f_client_socket_openk(lua_State* L, int status, lua_KContext ctx) {
   client_socket_t* c = lua_touserdata(L, -1);
   const char* protocol = luaL_checkstring(L, 2);
   const char* hostname = luaL_checkstring(L, 3);
-  int port = luaL_checkinteger(L, 4);
+  int port = strcmp(protocol, "unix") != 0 ? luaL_checkinteger(L, 4) : -1;
   int blocking = lua_toboolean(L, 5);
   char err[MAX_ERROR_SIZE]={0};
   switch (c->state) {
-    case STATE_INIT:
+    case STATE_INIT: {
       struct dns_options options = DNS_OPTS_INIT();
       struct addrinfo ai_hints = { .ai_family = PF_UNSPEC, .ai_socktype = SOCK_STREAM, .ai_flags = AI_CANONNAME };
       struct addrinfo *ent;
@@ -11415,7 +11417,10 @@ static int f_client_socket_openk(lua_State* L, int status, lua_KContext ctx) {
         snprintf(err, sizeof(err), "can't resolve %s: %s", hostname, dns_strerror(error));
         break;
       }
-      c->fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+      if (strcmp(protocol, "unix") == 0) 
+				c->fd = socket(AF_UNIX, SOCK_STREAM, 0);
+      else
+				c->fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
       if (strcmp(protocol, "https") == 0) {
         c->is_ssl = 1;
         int status;
@@ -11430,8 +11435,9 @@ static int f_client_socket_openk(lua_State* L, int status, lua_KContext ctx) {
       }
       socket_set_blocking(c, blocking);
       c->state = STATE_RESOLVING;
-    case STATE_RESOLVING:
-      while (c->state == STATE_RESOLVING) {
+    }
+    case STATE_RESOLVING: {
+      while (c->state == STATE_RESOLVING && strcmp(protocol, "unix") != 0) {
         int error = 0;
         struct addrinfo *ent;
         do {
@@ -11469,18 +11475,31 @@ static int f_client_socket_openk(lua_State* L, int status, lua_KContext ctx) {
         dns_ai_close(c->ai);
         c->ai = NULL;
       }
+    }
     case STATE_CONNECTING: {
       signal(SIGPIPE, SIG_IGN);
-      const char* ip = inet_ntoa(c->addr.sin_addr);
-      if (connect(c->fd, (struct sockaddr *) &c->addr, sizeof(c->addr)) == -1) {
-        snprintf(err, sizeof(err), "can't connect to host %s [%s] on port %d", hostname, ip, port);
-        break;
-      }
+      int ret = 0;
+      if (strcmp(protocol, "unix") == 0) {
+				struct sockaddr_un path = {0};
+				path.sun_family = AF_UNIX;
+				strncpy(path.sun_path, hostname, sizeof(path.sun_path) - 1);
+				ret = connect(c->fd, (struct sockaddr *) &path, sizeof(path));
+				if (ret == -1 && (errno != EAGAIN && errno != EWOULDBLOCK && errno != EALREADY && errno != EINPROGRESS)) {
+					snprintf(err, sizeof(err), "can't connect to unix socket %s: %s", hostname, strerror(errno));
+					break;
+				}
+			} else {
+				const char* ip = inet_ntoa(c->addr.sin_addr);
+				ret = connect(c->fd, (struct sockaddr *) &c->addr, sizeof(c->addr));
+				if (ret == -1 && (errno != EAGAIN && errno != EWOULDBLOCK && errno != EALREADY && errno != EINPROGRESS)) {
+					snprintf(err, sizeof(err), "can't connect to host %s [%s] on port %d: %s", hostname, ip, port, strerror(errno));
+					break;
+				}
+			}
+			if (ret == -1)
+				return socket_yield(L, c->fd, "write", f_client_socket_openk);
       if (c->is_ssl) {
-        if ((status = mbedtls_net_set_nonblock(&c->net_context)) != 0) {
-          mbedtls_snprintf(1, err, sizeof(err), status, "can't set up ssl for nonblocking: %d", status);
-          break;
-        } else if ((status = mbedtls_ssl_set_hostname(&c->ssl_context, hostname)) != 0) {
+				if ((status = mbedtls_ssl_set_hostname(&c->ssl_context, hostname)) != 0) {
           mbedtls_snprintf(1, err, sizeof(err), status, "can't set hostname %s", hostname);
           break;
         }
@@ -11489,7 +11508,7 @@ static int f_client_socket_openk(lua_State* L, int status, lua_KContext ctx) {
     } 
     case STATE_HANDSHAKE:
       if (c->is_ssl) {
-        int status = mbedtls_ssl_handshake(&c->ssl_context);
+        int status = mbedtls_ssl_handshake(&c->ssl_context);    
         if (status == MBEDTLS_ERR_SSL_WANT_READ)
           return socket_yield(L, c->fd, "read", f_client_socket_openk);
         if (status == MBEDTLS_ERR_SSL_WANT_WRITE)
@@ -11722,8 +11741,9 @@ int luaopen_wtk_client_c(lua_State* L) {
     local socket = ...\n\
     local PATHSEP = '/'\n\
     socket.ssl('system', '/tmp' .. PATHSEP .. 'ssl.certs', 0)\n\
-    local function components(url)\n\
-      local _, _, protocol, hostname, port, url = url:find('^(%w+)://([^/:]+):?(%d*)(.*)$')\n\
+    function socket.componentsURI(url)\n\
+			if url:find('unix://') then return 'unix', url:sub(8) end\n\
+      local protocol, hostname, port, url = url:match('^(%w+)://([^/:]+):?(%d*)(.*)$')\n\
       return protocol, hostname, (not port or port == '') and (protocol == 'https' and 443 or 80) or tonumber(port), (port and port ~= '') and port or nil, (not url or url == '' and '/' or url)\n\
     end\n\
     function socket.escapeURI(param) return param:gsub(\"[^A-Za-z0-9%-_%.%!~%*'%(%)]\", function(e) return string.format('%%%02x', e:byte(1)) end) end\n\
@@ -11776,6 +11796,7 @@ int luaopen_wtk_client_c(lua_State* L) {
     socket.write = socket.send\n\
     local response = {}\n\
     response.__index = response\n\
+    response.__tostring = function(self) return self.code .. ': ' .. self.body end\n\
     function response.new(socket)\n\
       return setmetatable({ body = {}, code = nil, headers = {}, bytes_read = 0, current_chunk_size = nil, socket = socket }, response)\n\
     end\n\
@@ -11808,10 +11829,10 @@ int luaopen_wtk_client_c(lua_State* L) {
     \n\
     \n\
     function socket:request(options)\n\
-      local protocol, hostname, implied_port, explicit_port, remainder = components(options.url)\n\
+      local protocol, hostname, implied_port, explicit_port, remainder = socket.componentsURI(options.url)\n\
       local lines = {}\n\
       local bytes_written, err\n\
-      table.insert(lines, string.format(\"%s %s HTTP/1.1\", options.method, remainder or '/'))\n\
+      table.insert(lines, string.format(\"%s %s HTTP/1.1\", options.method, ((options.path and socket.escapeURI(options.path)) or remainder or '/')))\n\
       for k, v in pairs(options.headers) do table.insert(lines, k .. ':' .. v) end\n\
       table.insert(lines, '')\n\
       table.insert(lines, '')\n\
@@ -11852,7 +11873,7 @@ int luaopen_wtk_client_c(lua_State* L) {
     end\n\
     \n\
     function socket.new(default_options)\n\
-      local options = { max_redirects = 10, max_timeout = 5, headers = { ['user-agent'] = 'wtk-client/1.0' }, cookies = {} }\n\
+      local options = { max_redirects = 10, redirect = true, max_timeout = 5, headers = { ['user-agent'] = 'wtk-client/1.0' }, cookies = {} }\n\
       for k,v in pairs(default_options or {}) do options[k] = v end\n\
       return {\n\
         connections = {},\n\
@@ -11862,15 +11883,16 @@ int luaopen_wtk_client_c(lua_State* L) {
           local t = { }\n\
           headers = headers or {}\n\
           options = options or {}\n\
+          t.body = body\n\
+          if t.body ~= nil and type(t.body) == 'string' and not headers['content-length'] then headers['content-length'] = #body end\n\
           for k,v in pairs(self.options) do t[k] = v end\n\
           for k,v in pairs(options) do t[k] = v end\n\
           for k,v in pairs(headers) do t.headers[k] = v end\n\
           t.method = method\n\
           t.url = url\n\
-          t.body = body\n\
           local res\n\
           while true do\n\
-            local protocol, hostname, implied_port, explicit_port, path = components(t.url)\n\
+            local protocol, hostname, implied_port, explicit_port, path = socket.componentsURI(t.url)\n\
             if self.cookies and self.cookies[hostname] then\n\
               local values = {}\n\
               for k,v in pairs(self.cookies[hostname]) do table.insert(values, k .. '=' .. self.encode(v.value)) end\n\
@@ -11898,9 +11920,8 @@ int luaopen_wtk_client_c(lua_State* L) {
 								end\n\
               end\n\
             end\n\
-            if res.code >= 400 then error(res.code) end\n\
-            if res.code < 300 then\n\
-              if not options or options.body ~= 'nonblocking' then\n\
+            if res.code < 300 or res.code >= 400 then\n\
+              if method ~= 'HEAD' and (not options or options.body ~= 'nonblocking') then\n\
                 res.body = {}\n\
                 while true do\n\
                   local chunk = res:read(4096, not coroutine.isyieldable())\n\
@@ -11911,6 +11932,7 @@ int luaopen_wtk_client_c(lua_State* L) {
               end\n\
               break \n\
             end\n\
+            if not options.redirect then return res.body, res end\n\
             t.redirected = (t.redirected or 0) + 1\n\
             if t.redirected > t.max_redirects then error('redirected ' .. t.redirected .. ', which is over the max redirect threshold') end\n\
             local location = res.headers.location\n\
@@ -11919,18 +11941,19 @@ int luaopen_wtk_client_c(lua_State* L) {
             t.body = nil\n\
             if t.headers then t.headers['content-length'] = nil end\n\
             if location:find('^/') then\n\
-              protocol, hostname, implied_port, explicit_port, path = components(t.url)\n\
+              protocol, hostname, implied_port, explicit_port, path = socket.componentsURI(t.url)\n\
               t.url = protocol .. '://' .. hostname .. (explicit_port and (':' .. explicit_port) or '') .. location\n\
             else\n\
               t.url = location\n\
             end\n\
           end\n\
-          return res.body, res\n\
+          return res\n\
         end,\n\
-        get = function(self, url, options, headers) return self:request('GET', url, nil, options, headers) end,\n\
-        post = function(self, url, body, options, headers) return self:request('POST', url, body, options, headers) end,\n\
-        put = function(self, url, body, options, headers) return self:request('PUT', url, body, options, headers) end,\n\
-        delete = function(self, url, body, options, headers) return self:request('DELETE', url, body, options, headers) end,\n\
+        get = function(self, url, options, headers) local res = self:request('GET', url, nil, options, headers) assert(res.code < 400, res) return res.body, res end,\n\
+        head = function(self, url, options, headers) local res = self:request('HEAD', url, nil, options, headers) assert(res.code < 400, res) return res end,\n\
+        post = function(self, url, body, options, headers) local res = self:request('POST', url, body, options, headers) assert(res.code < 400, res) return res.body, res end,\n\
+        put = function(self, url, body, options, headers) local res = self:request('PUT', url, body, options, headers) assert(res.code < 400, res) return res.body, res end,\n\
+        delete = function(self, url, body, options, headers) local res = self:request('DELETE', url, body, options, headers) assert(res.code < 400, res) return res.body, res end,\n\
         options = options\n\
       }\n\
     end\n\

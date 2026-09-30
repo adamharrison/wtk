@@ -224,7 +224,7 @@ function Request:file(path, headers)
   end
   return self:respond(self.headers['range'] and 206 or 200, headers, function() 
     if s >= e then return nil end
-    local chunk = f:read(math.min(512*1024, e - s)) 
+    local chunk = f:read(math.min(4*1024, e - s)) 
     if not chunk then return nil end
     s = s + #chunk
     return chunk
@@ -345,8 +345,8 @@ function Server.new(t)
   if t.host and t.host:find("^unix://") and wtk.system.stat(t.host:sub(8)) and wtk.system.stat(t.host:sub(8)).type == "socket" then assert(os.remove(t.host:sub(8))) end
   local self = setmetatable(merge({
     socket = socket.bind(t.host or "0.0.0.0", t.port or (t.debug and 8080 or 80)),
-    mimes = { ["svg"] = "image/svg+xml", ["jpeg"] = "image/jpeg", ["jpg"] = "image/jpeg", ["png"] = "image/png", ["gif"] = "image/gif", ["js"] = "text/javascript", ["html"] = "text/html", ["css"] = "text/css", ["txt"] = "text/plain" },
-    codes = { [101] = "Switching Protocols", [200] = "OK", [201] = "Created", [204] = "No Content", [206] = "Partial Content", [301] = "Moved Permanently", [302] = "Found", [400] = "Bad Request", [403] = "Forbidden", [404] = "Not Found", [500] = "Internal Server Error" },
+    mimes = { ["svg"] = "image/svg+xml", ["jpeg"] = "image/jpeg", ["jpg"] = "image/jpeg", ["webp"] = "image/webp", ["png"] = "image/png", ["gif"] = "image/gif", ["js"] = "text/javascript", ["html"] = "text/html", ["css"] = "text/css", ["txt"] = "text/plain" },
+    codes = { [101] = "Switching Protocols", [200] = "OK", [201] = "Created", [204] = "No Content", [206] = "Partial Content", [301] = "Moved Permanently", [302] = "Found", [400] = "Bad Request", [403] = "Forbidden", [404] = "Not Found", [500] = "Internal Server Error", [502] = "Bad Gateway", [504] = "Gateway Timeout" },
     routes = { GET = { }, POST = { }, PUT = { }, DELETE = { } },
     log = Server.Log.new(t.verbose),
     templates = {},
@@ -355,9 +355,9 @@ function Server.new(t)
   }, t), Server)
   local type, address, port, peer = self.socket:peer()
   if type == "unix" then
-    self.log:info("Server up at %s", address)
+    self.log:info("%s up at %s", t.name or "Server", address)
   else 
-    self.log:info("Server up on %s:%s", address, port)
+    self.log:info("%s up on %s:%s", t.name or "Server", address, port)
   end
   return self
 end
@@ -383,7 +383,8 @@ function Server:accept()
   if socket then 
     assert(self.clients < self.max_simultaneous_connections, "too many simultaneous connections")
     local client = Server.Client.new(self, socket)
-    self.log:verbose("Incoming connection from '%s'", select(4, socket:peer()))
+    local protocol, incoming_bind, incoming_port, peer_host = socket:peer()
+    self.log:verbose("Incoming connection from '%s' on %s:%d", peer_host, incoming_bind, incoming_port or 0)
     self.clients = self.clients + 1
     client.job = self.loop:job(function()
       while not client.closed do

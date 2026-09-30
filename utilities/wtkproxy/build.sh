@@ -1,6 +1,6 @@
 #!/bin/bash
 CFLAGS="$CFLAGS -I. -Iwtk"
-LDFLAGS="`pkg-config sqlite3 mbedtls --libs --static`"
+LDFLAGS="`pkg-config mbedtls --libs --static`"
 [[ "$CC" == "" ]] && CC=gcc
 [[ "$@" == "clean" ]] && { rm -f packer packed.lua.c wtkproxy; exit 0; }
 [[ "$@" != *"-g"* && "$@" != "-O" ]] && CFLAGS="$CFLAGS -O2 -s"
