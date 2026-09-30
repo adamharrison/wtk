@@ -175,9 +175,10 @@ function Server.Request:forward(uri, options)
   if not options then options = {} end
   local PACKET_SIZE = options.chunk or 1024
   local protocol, hostname, port, url = Client.componentsURI(uri)
-  local agent = assert(Client:open(assert(protocol, "unable to parse uri: " .. uri), hostname, port), { code = 502 })
+  local agent = assert(Client:open(assert(protocol, { code = 400, message = "unable to parse uri: " .. uri }), hostname, port), { code = 502 })
   local res = agent:request({ method = options.method or self.method, url = uri, path = self.path, headers = self.headers or {}, body = options.method ~= "GET" and options.method ~= "HEAD" and function() return self:read(PACKET_SIZE) end })
   if res.code == 101 and res.headers.upgrade == "websocket" then 
+    self.server.log:verbose("Request forward transforming to websocket.")
     self:respond(Server.Response.new(options.code or res.code, res.headers))
     -- shuttle data back and forth
     loop:job(function() while not self.client.closed and not res.socket.closed do res.socket:write(self.client:read(PACKET_SIZE)) end self.client:close() res.socket:close() end)
@@ -211,7 +212,7 @@ function Server:get_location(host, request)
   for _, location in ipairs(t) do
     local s, e = request.path:find("^" .. location.path)
     if s then
-      return merge(host, location.location), request.path:sub(e + 1)
+      return location.location, request.path:sub(e + 1)
     end
   end
   return nil
@@ -259,7 +260,8 @@ function proxy.handler(self, request)
   local host = assert(self:get_host(request.headers.host), { code = 404, message = "can't find host " .. (request.headers.host or "unknown") })
   local location, remainder = self:get_location(host, request)
   local target = location or host
-  local path = remainder or request.path
+  local path = (remainder or request.path)
+  assert(not path:find("%/%.%."), { code = 403, message = "invalid path " .. path })
   target.last_request = os.time()
   if target.execute and (not target.running or target.running:status()) then
     target.running = proxy.startup_process(target.execute)
@@ -299,6 +301,9 @@ local function decode_hosts(hosts)
       if not host.ssl.key and host.ssl.key_path then host.ssl.key = assert(wtk.io.file(host.ssl.key_path, "rb")):read("*all") assert(ACME.component(host.ssl.key), "key specified at " .. host.ssl.key_path .. " is invalid") end
       if not host.ssl.cert and host.ssl.cert_path then host.ssl.cert = assert(wtk.io.file(host.ssl.cert_path, "rb")):read("*all") assert(ACME.cert(host.ssl.cert), "cert specified at " .. host.ssl.cert_path .. " is invalid") end
       if host.hostname then host.hostname = arrayify(host.hostname) end
+    end
+    for path, location in pairs(host.locations or {}) do
+      for k,v in pairs(host) do if location[k] == nil then location[k] = v end end
     end
     if host.execute and not host.execute.idle then host.running = proxy.startup_process(host.execute) end
   end

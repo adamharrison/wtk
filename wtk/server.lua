@@ -387,10 +387,11 @@ function Server:accept()
     self.log:verbose("Incoming connection from '%s' on %s:%d", peer_host, incoming_bind, incoming_port or 0)
     self.clients = self.clients + 1
     client.job = self.loop:job(function()
+      client:handshake()
+      self.log:verbose("Handshake complete for '%s' on %s:%d", peer_host, incoming_bind, incoming_port or 0)
       while not client.closed do
         local request
         try(function()
-          client:handshake()
           request = Request.new(client):parse_headers()
           if request then
             local res = { self:accepted(client, request) }

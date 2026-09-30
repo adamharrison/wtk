@@ -333,12 +333,6 @@ static int f_server_socket_accept(lua_State* L) {
   return 1;
 }
 
-static double get_time() {
-	struct timeval tv;
-	gettimeofday(&tv, NULL);
-	return (double)tv.tv_sec + tv.tv_usec / 1000000.0;
-}
-
 #ifdef WTK_SERVER_SSL
 static int f_server_socket_handshake_callback( void *p_info, mbedtls_ssl_context *ssl,
 							const unsigned char *name, size_t name_len )
@@ -359,7 +353,6 @@ static int f_server_socket_handshake_callback( void *p_info, mbedtls_ssl_context
 		size_t pklen, certlen;
 		const char* pkstr = lua_tolstring(L, -2, &pklen);
 		const char* certstr = lua_tolstring(L, -1, &certlen);
-		double start = get_time();
 		if (
 			(ret = mbedtls_pk_parse_key(&sock->pk, pkstr, pklen + 1, NULL, 0, mbedtls_ctr_drbg_random, &sock->ctr_drbg)) != 0 ||
 			(ret = mbedtls_x509_crt_parse(&sock->cert, certstr, certlen + 1)) != 0 ||
@@ -372,7 +365,6 @@ static int f_server_socket_handshake_callback( void *p_info, mbedtls_ssl_context
 		}
 		if (sock->cert.next)
 			mbedtls_ssl_set_hs_ca_chain(&sock->ssl, sock->cert.next, NULL);
-		fprintf(stderr, "TIME: %f\n", get_time() - start);
 		return ret == 0 ? 0 : -1;
 	}
 	return -1;
