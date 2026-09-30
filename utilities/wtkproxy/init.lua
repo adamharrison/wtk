@@ -312,7 +312,7 @@ function proxy.handler(self, request)
     return request:redirect(target.redirect)
   elseif target.code then
     self.log:verbose("Responding with code %d.", target.code)
-    return request:respond(tonumber(target.code), target.headers, target.body)
+    return request:respond(tonumber(target.code), target.headers, target.body or '')
   else
     self.log:verbose("Unknown target action.", target.code)
     error({ code = 404 })
@@ -324,7 +324,7 @@ local function load_handler(handler)
     handler = assert(loadfile(handler))()
     assert(type(handler) == 'function', "Map file does not return a function.")
   else
-    handler =  assert(load("return function(server, request) " .. handler .. " end", "=handler"))()
+    handler = assert(load("return function(server, request) " .. handler .. " end", "=handler"))()
   end
   return handler
 end
@@ -405,7 +405,6 @@ local function load_arg_config(args)
   proxy.log:info("Loading configuration from arguments...")
   local config = { servers = {} }
   if args[1] ~= "--server" then table.insert(args, 1, "--server") end
-  local key = nil
   local array_keys = { server = 1, host = 2  }
   local hash_keys = { location = 3 }
   local target = { }
@@ -430,7 +429,7 @@ local function load_arg_config(args)
   for i, arg in ipairs(args) do
     if arg:find("^%-%-") then 
       if not hash_keys[target[#target]] and type(target[#target]) ~= "number" then table.remove(target) end
-      key = arg:sub(3) 
+      local key = arg:sub(3)
       if array_keys[key] then
         if #target < 2 or target[#target-1] ~= (key .. "s") or type(target[#target]) ~= 'number' then  
           table.insert(target, key .. "s") 
@@ -478,13 +477,7 @@ if args.config then
     end)
   end
 else
-  try(function()
-    load_arg_config(args)
-  end, function(err)
-    print(err)
-    print(err.stack)
-    os.exit(0)
-  end)
+  load_arg_config(args)
 end
 
 
