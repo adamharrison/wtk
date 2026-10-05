@@ -7,10 +7,8 @@ local Client = require "wtk.client.c"
 local base64 = (require "wtk.server.c").base64
 
 local function arrayify(t) if type(t) == 'table' then return t else return { t } end end
-local function merge(...) local r = {} for _, t in ipairs({ ... }) do for k, v in pairs(t) do r[k] = v end end return r end
-local function filter(func, t) local r = {} for i, v in ipairs(t) do if func(v,i) then table.insert(r, v)  end end return r end
-local function map(func, t) local r = {} for i, v in ipairs(t) do table.insert(r, func(v,i)) end return r end
 local function base64url(data) return base64.encode(data):gsub("%+", "-"):gsub("/", "_"):gsub("=", "") end
+wtk.monitor = monitor
 
 assert(ACME, "requires ACME to be defined by main.c")
 ACME.__index = ACME
@@ -183,7 +181,7 @@ function Server.Request:forward(uri, options)
     headers['host'] = nil
   end
   local res = agent:request({ 
-    log = self.client.server.vverbose and function(chunk, direction) self.client.server.log:verbose("%s %s", direction == "write" and ">" or "<", chunk) end, 
+    log = self.client.server.vverbose and function(chunk, direction) self.log:verbose("%s %s", direction == "write" and ">" or "<", chunk) end, 
     method = options.method or self.method, 
     url = uri, 
     path = self.path,
@@ -191,7 +189,7 @@ function Server.Request:forward(uri, options)
     body = options.method ~= "GET" and options.method ~= "HEAD" and function() return self:read(PACKET_SIZE) end 
   })
   if res.code == 101 and res.headers.upgrade == "websocket" then 
-    self.server.log:verbose("Request forward transforming to websocket.")
+    self.log:verbose("Request forward transforming to websocket.")
     self:respond(Server.Response.new(options.code or res.code, res.headers))
     -- shuttle data back and forth
     loop:job(function() while not self.client.closed and not res.socket.closed do res.socket:write(self.client:read(PACKET_SIZE)) end self.client:close() res.socket:close() end)
@@ -232,6 +230,10 @@ function Server:get_location(host, request)
   return nil
 end
 
+function Server:get_log(host, server, request)
+
+end
+
 function Server.Client:handshake()
   if self.server.ssl then
     local status, err
@@ -254,6 +256,16 @@ if args.quiet then proxy.log.log = function() end end
 proxy.servers = {}
 proxy.challenges = {}
 
+function proxy.parse_text(text) return text:find("{[{%%]") and Server.Template.parse(text) or text end
+function proxy.render_text(text, request) 
+  if getmetatable(text) == Server.Template then
+    return text:render({ request = request })
+  elseif type(text) == 'table' then 
+    local t = {} for k,v in pairs(text) do t[k] = proxy.render_text(t[k], request) end return t 
+  end 
+  return text 
+end
+
 function proxy.startup_process(execute)
   proxy.log:info("Spinning up executable for %s.", execute.bin[1])
   local process = proc.new(assert(execute.bin, "missing bin option"), { wd = execute.wd, uid = execute.user })
@@ -263,6 +275,7 @@ function proxy.startup_process(execute)
 end
 
 function proxy.handler(self, request)
+  request.host = request.headers.host and request.headers.host:gsub("%:%d+$", "")
   if request.headers.host and proxy.challenges[request.headers.host] then 
     local token = request.path:match("^/%.well%-known/acme%-challenge/([^/]+)$")
     if token and proxy.challenges[request.headers.host][token] then 
@@ -276,6 +289,15 @@ function proxy.handler(self, request)
   local location, remainder = self:get_location(host, request)
   local target = location or host
   local path = (remainder or request.path)
+  if target.log then
+    local logfile = proxy.render_text(target.log, request)
+    if request.client.logfile ~= logfile then
+      request.client.log = Server.Log.new(args.verbose or false, assert(wtk.io.file(logfile, "ab")))
+      request.client.logfile = logfile
+    end
+    request.log = request.client.log
+  end
+  request.log:verbose("REQ %s %s %s", request.method, request.path, request.client.peer)
   assert(not path:find("%/%.%."), { code = 403, message = "invalid path " .. path })
   target.last_request = os.time()
   if target.execute and (not target.running or target.running:status()) then
@@ -283,40 +305,48 @@ function proxy.handler(self, request)
     if target.execute.idle then
       loop:job(function() while true do 
         local timeout = target.execute.idle - (os.time() - target.last_request)
-        if process:status() or timeout <= 0 then
-          proxy.log:info("Terminating executable for %s...", request.headers.host)
-          proxy.log:info("Finished terminating executable for %s, exit code %d.", request.headers.host, process:term(target.execute.termout or 10))
+        if target.running:status() or timeout <= 0 then
+          request.log:info("Terminating executable for %s...", request.headers.host)
+          request.log:info("Finished terminating executable for %s, exit code %d.", request.headers.host, target.running:term(target.execute.termout or 10))
           target.running = nil
           break
         else
           coroutine.yield(timeout) 
         end
-      end end)
+      end end):fail(function(err)
+        request.log:error("Error in idle check %s", err)
+      end)
     end
     coroutine.yield(target.spinup or 0.1)
   end
+  local headers = proxy.render_text(target.headers, request)
   if target.handler then
-    self.log:verbose("Running custom handler...")
-    return target.handler(self, request)
+    request.log:verbose("Running custom handler...")
+    target.handler(self, request)
   elseif target.forward then
-    self.log:verbose("Forwarding request to %s...", target.forward)
-    return request:forward(target.forward, target)
+    local forward = proxy.render_text(target.forward, request)
+    request.log:verbose("Forwarding request to %s...", forward)
+    request:forward(forward, merge(target, { headers = headers }))
   elseif target.static then
-    self.log:verbose("Serving static directory %s.", target.static .. path)
-    return request:file(target.static .. path, target.headers)
+    local static = proxy.render_text(target.static, request)
+    request.log:verbose("Serving static directory %s.", static .. path)
+    request:file(static .. path, headers)
   elseif target.file then
-    self.log:verbose("Serving static file %s.", target.file)
-    return request:file(target.file, target.headers)
+    local file = proxy.render_text(target.file, request)
+    request.log:verbose("Serving static file %s.", file)
+    request:file(file, headers)
   elseif target.redirect then
-    self.log:verbose("Redirecting to %s.", target.redirect)
-    return request:redirect(target.redirect)
+    local redirect = proxy.render_text(target.redirect, request)
+    request.log:verbose("Redirecting to %s.", redirect)
+    request:redirect(redirect, headers)
   elseif target.code then
-    self.log:verbose("Responding with code %d.", target.code)
-    return request:respond(tonumber(target.code), target.headers, target.body or '')
+    request.log:verbose("Responding with code %d.", target.code)
+    request:respond(tonumber(target.code), headers, proxy.render_text(target.body or '', request))
   else
-    self.log:verbose("Unknown target action.", target.code)
+    request.log:verbose("Unknown target action.", target.code)
     error({ code = 404 })
   end
+  request.log:flush()
 end
 
 local function load_handler(handler)
@@ -329,6 +359,12 @@ local function load_handler(handler)
   return handler
 end
 
+local function compute_templates(t)
+  for _, k in ipairs({ "forward", "static", "file", "redirect", "body", "log" }) do if t[k] ~= nil then t[k] = proxy.parse_text(t[k]) end end
+  if t.headers then for k, v in pairs(t.headers) do t.headers[k] = proxy.parse_text(v) end end
+  return t
+end
+
 local function decode_hosts(hosts)
   for i, host in ipairs(hosts or {}) do
     if host.ssl then
@@ -337,11 +373,13 @@ local function decode_hosts(hosts)
       if not host.ssl.cert and host.ssl.cert_path then host.ssl.cert = assert(wtk.io.file(host.ssl.cert_path, "rb")):read("*all") assert(ACME.cert(host.ssl.cert), "cert specified at " .. host.ssl.cert_path .. " is invalid") end
     end
     for path, location in pairs(host.locations or {}) do
-      for k,v in pairs(host) do if location[k] == nil then location[k] = v end end
+      for k,v in pairs(host) do if location[k] == nil then location[k] = compute_templates(v) end end
     end
     if host.hostname then host.hostname = arrayify(host.hostname) end
     if host.handler then host.handler = load_handler(host.handler) end
     if host.execute and not host.execute.idle then loop:add(function() host.running = proxy.startup_process(host.execute) end) end
+    if host.jobs then host.jobs = map(load_handler, host.jobs) end
+    compute_templates(host)
   end
   return hosts
 end
@@ -353,6 +391,7 @@ local function load_config(config)
     server:stop(loop)
     for _, host in ipairs(server.hosts) do
       if host.running then host.running:term(5) host.running = nil end
+      for i,v in ipairs(host.jobs or {}) do loop:rm(v) end host.jobs = {}
     end
   end
   proxy.servers = {}
@@ -375,20 +414,14 @@ local function load_config(config)
       if port then port = tonumber(port) end
       table.insert(proxy.servers, Server.new(merge(args, { port = port, host = bind, ssl = true, hosts = hosts, handler = proxy.handler }, proxy)):add(loop))
     end
+    for _, host in ipairs(hosts or {}) do host.jobs = map(function(v) 
+      proxy.log:verbose("Spinning up job for " .. host.hostname[1] .. "...")
+      return loop:job(function() v(host) end):fail(function(err) proxy.log:error("%s", err) proxy.log:error("%s", err.stack) end)
+    end, host.jobs or {}) end
   end
   if add_acme then table.insert(proxy.servers, Server.new(merge(args, { name = "ACME Server", port = 80, host = "0.0.0.0", handler = proxy.handler })):add(loop)) end
   assert(#proxy.servers > 0, "you have listed no active servers")
 end
-
-local function load_config_path(path)
-  proxy.log:info("Loading configuration from %s...", path)
-  load_config(assert(json.decode(assert(wtk.io.file(path, "rb")):read("*all"))))
-end
-
--- ./wtkproxy --http 80 --https 443\
---     --host --hostname www.test.com test.com --ssl.key_path /var/www/server/key.key --ssl.cert_path /var/www/server/cert.crt --forward 'http://127.0.0.1:5888' --execute.bin /var/www/server \\--port 5888 --execute.idle 600\
---     --host --hostname www.test2.com test2.com --ssl true --forward 'http://127.0.0.1:4765'\
---     --host --hostname '.*%.test3%.com' --location / --static /var/www/server/root
 
 local function split(splitter, str)
   local o = 1
@@ -401,6 +434,22 @@ local function split(splitter, str)
   end
   return res
 end
+
+local function transpile_config(contents)
+  contents = contents:gsub("\n%s*%/%/.-\n", "\n"):gsub("```(.-)```", function(e) return '"' .. table.concat(split("\n", e:gsub('"', '\\"')), "\\n") .. '"' end)
+  return assert(json.decode(contents))
+end
+
+local function load_config_path(path)
+  proxy.log:info("Loading configuration from %s...", path)
+  return load_config(transpile_config(assert(wtk.io.file(path, "rb")):read("*all")))
+end
+
+-- ./wtkproxy --http 80 --https 443\
+--     --host --hostname www.test.com test.com --ssl.key_path /var/www/server/key.key --ssl.cert_path /var/www/server/cert.crt --forward 'http://127.0.0.1:5888' --execute.bin /var/www/server \\--port 5888 --execute.idle 600\
+--     --host --hostname www.test2.com test2.com --ssl true --forward 'http://127.0.0.1:4765'\
+--     --host --hostname '.*%.test3%.com' --location / --static /var/www/server/root
+
 local function load_arg_config(args)
   proxy.log:info("Loading configuration from arguments...")
   local config = { servers = {} }
@@ -460,25 +509,29 @@ local function load_arg_config(args)
   load_config(config)
 end
 
-if args.config then 
-  load_config_path(args.config)
-  loop:signal(SIGHUP, function() proxy.log:info("Received SIGHUP, reloading config.") load_config_path(args.config) end)
-  if args.live then
-    loop:job(function() 
-      local mtime = assert(system.stat(args.config), "can't find config file").mtime
-      while true do
-        local nmtime = assert(system.stat(args.config), "can't find config file").mtime
-        if mtime < nmtime then
-          load_config_path(args.config)
-          mtime = nmtime
+try(function()
+  if args.config then 
+    load_config_path(args.config)
+    loop:signal(SIGHUP, function() proxy.log:info("Received SIGHUP, reloading config.") load_config_path(args.config) end)
+    if args.live then
+      loop:job(function() 
+        local mtime = assert(system.stat(args.config), "can't find config file").mtime
+        while true do
+          local nmtime = assert(system.stat(args.config), "can't find config file").mtime
+          if mtime < nmtime then
+            load_config_path(args.config)
+            mtime = nmtime
+          end
+          coroutine.yield(1)
         end
-        coroutine.yield(1)
-      end
-    end)
+      end)
+    end
+  else
+    load_arg_config(args)
   end
-else
-  load_arg_config(args)
-end
+end, function(err)
+  proxy.log:error("%s: %s", err, err.stack)
+end)
 
 
 if args.acme then
@@ -487,14 +540,40 @@ if args.acme then
     proxy.log:info("Filing challenge for %s of token %s.", domain, token)
     proxy.challenges[domain][token] = body
   end, lenience = 30*24*60*60, configdir = "./.acme", log = proxy.log })
+  local certificate_directory_path = proxy.acme.configdir .. "/certificates"
   assert(args.acme:match("%w@%w+%.%w+"), "--acme should take an email")
+  
+  function proxy.get_certificate(host, hostnames, key, cert)
+    if not key then 
+      local key_path = host and host.ssl.key_path or certificate_directory_path .. "/" .. hostnames[1] .. ".key"
+      if not system.stat(key_path) then 
+        proxy.log:info("Generating %s private key, storing at %s (this can take a while on slower systems)...", hostnames[1], key_path)
+        key = assert(proc.run(function() local private_key = assert(ACME.keypair()) io.stdout:write(private_key):close() end))
+        proxy.log:info("%s private key generated at %s.", host.hostname[1], key_path)
+        assert(wtk.io.file(key_path, "wb")):write(key):close()
+      else
+        key = assert(wtk.io.file(key_path, "rb")):read("*all")
+      end
+    end
+    local cert_path = host and host.ssl.cert_path or certificate_directory_path .. "/" .. hostnames[1] .. ".crt"
+    if not cert then
+      cert = system.stat(cert_path) and assert(wtk.io.file(cert_path, "rb")):read("*all")
+    end
+    if #hostnames > 0 and (not cert or (assert(ACME.cert(cert)).valid_to - os.time()) < proxy.acme.lenience) then
+      proxy.log:info("%s SSL certificate for %s...", cert and "Generating" or "Renewing", table.concat(hostnames, ", "))
+      cert = proxy.acme:get_certificate(args.acme, key, hostnames)
+      proxy.log:info("Successfully renewed SSL certificate for %s; writing to %s.", table.concat(arrayify(hostnames), ", "), cert_path)
+      assert(wtk.io.file(cert_path, "wb")):write(cert):close()
+    end
+    return key, cert
+  end
+  
   loop:job(function() 
     proxy.log:info("Initializing ACME loop...")
     while true do
       proxy.log:info("Performing SSL ACME check...")
       if not system.stat(proxy.acme.configdir) then assert(system.mkdir(proxy.acme.configdir)) end
       local key_path = proxy.acme.configdir .. "/lets-encrypt.key"
-      local certificate_directory_path = proxy.acme.configdir .. "/certificates"
       if not system.stat(key_path) then 
         proxy.log:info("Generating ACME private key, storing at %s (this can take a while on slower systems)...", key_path)
         proxy.acme.private_key = assert(proc.run(function() local private_key = assert(ACME.keypair()) io.stdout:write(private_key):close() end))
@@ -510,26 +589,8 @@ if args.acme then
           for _, host in ipairs(server.hosts) do
             if host.ssl then
               local hostnames = filter(function(h) return not h:find("%*") end, host.hostname)
-              if not host.ssl.key then 
-                local key_path = host.ssl.key_path or certificate_directory_path .. "/" .. host.hostname[1] .. ".key"
-                if not system.stat(key_path) then 
-                  proxy.log:info("Generating %s private key, storing at %s (this can take a while on slower systems)...", host.hostname[1], key_path)
-                  host.ssl.key = assert(proc.run(function() local private_key = assert(ACME.keypair()) io.stdout:write(private_key):close() end))
-                  proxy.log:info("%s private key generated at %s.", host.hostname[1], key_path)
-                  assert(wtk.io.file(key_path, "wb")):write(host.ssl.key):close()
-                else
-                  host.ssl.key = assert(wtk.io.file(key_path, "rb")):read("*all")
-                end
-              end
-              local cert_path = host.ssl.cert_path or certificate_directory_path .. "/" .. host.hostname[1] .. ".crt"
-              if not host.ssl.cert then
-                host.ssl.cert = system.stat(cert_path) and assert(wtk.io.file(cert_path, "rb")):read("*all")
-              end
-              if #hostnames > 0 and (not host.ssl.cert or (assert(ACME.cert(host.ssl.cert)).valid_to - os.time()) < proxy.acme.lenience) then
-                proxy.log:info("%s SSL certificate for %s...", host.ssl.cert and "Generating" or "Renewing", table.concat(host.hostname, ", "))
-                host.ssl.cert = proxy.acme:get_certificate(args.acme, host.ssl.key, host.hostname)
-                proxy.log:info("Successfully renewed SSL certificate for %s; writing to %s.", table.concat(arrayify(host.hostname), ", "), cert_path)
-                assert(wtk.io.file(cert_path, "wb")):write(host.ssl.cert):close()
+              if #hostnames > 0 then
+                host.ssl.key, host.ssl.cert = proxy.get_certificates(host, hostnames, host.ssl.key, host.ssl.cert)                
               end
             end
           end

@@ -342,19 +342,19 @@ static const luaL_Reg stream_lib[] = {
 			flagInt = O_RDWR;
 		else if (strchr(flags, 'r'))
 			flagInt = O_RDONLY;
-		else if (strchr(flags, 'w'))
+		else if (strchr(flags, 'w') || strchr(flags, 'a'))
 			flagInt = O_WRONLY;
 		if (strchr(flags, 'w'))
 			flagInt |= O_TRUNC | O_CREAT;
 		if (strchr(flags, 'a'))
-			flagInt |= O_APPEND;
+			flagInt |= O_APPEND | O_CREAT;
 		int fd = open(luaL_checkstring(L, 1), flagInt | O_NONBLOCK, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 		if (fd == -1) {
 			lua_pushnil(L);
 			lua_pushfstring(L, "unable to open file %s: %s", luaL_checkstring(L, 1), strerror(errno));
 			return 2;
 		}
-		return f_stream_new(L, strchr(flags, 'r') ? fd : -1, (strchr(flags, 'r') || strchr(flags, 'w')) ? fd : -1);
+		return f_stream_new(L, strchr(flags, 'r') ? fd : -1, (strchr(flags, 'w') || strchr(flags, 'a')) ? fd : -1);
 	}
 	
 #endif
@@ -521,6 +521,11 @@ int luaopen_wtk_c(lua_State* L) {
 	f_stream_new(L, -1, 2), lua_setfield(L, -2, "stderr");
 	lua_pop(L, 1);
 	if (luaW_loadblock(L, __FILE__, __LINE__, "local wtk = ...\n\
+	function merge(...) local r = {} for _, t in ipairs({ ... }) do for k, v in pairs(t) do r[k] = v end end return r end\n\
+	function map(func, t) local r = {} for i, v in ipairs(t) do table.insert(r, func(v,i)) end return r end\n\
+	function filter(func, t) local r = {} for i, v in ipairs(t) do if func(v,i) then table.insert(r, v) end end return r end\n\
+	function keys(t) local r = {} for k,v in pairs(t) do table.insert(r, k) end return r end\n\
+	function values(t) local r = {} for k,v in pairs(t) do table.insert(r, v) end return r end\n\
 	wtk.Loop = wtk.loop\n\
 	wtk.Stream = wtk.stream\n\
 	wtk.Stream.__index = wtk.Stream\n\
@@ -716,6 +721,7 @@ int luaopen_wtk_c(lua_State* L) {
 	package.loaded['wtk.c.loop'] = wtk.loop\n\
 	package.loaded['wtk.c.system'] = wtk.system\n\
 	wtk.system.mtime = function(path) local s, err = wtk.system.stat(path) if not s then return nil, err end return s.mtime end\n\
+	wtk.system.rmrf = function(...) local s, err for _, path in ipairs({ ... }) do s, err = wtk.system.stat(path) if s and s.type == 'dir' then s, err = wtk.system.rmrf(path .. '/' .. s.name) if s then s, err = wtk.system.rmdir(path) end else s, err = os.remove(path) end if not s then break end end return s, err end\n\
 	function wtk.pargs(arguments, options, short_options)\n\
 		local args = {}\n\
 		local i = 1\n\

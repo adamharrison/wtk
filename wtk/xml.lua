@@ -32,7 +32,6 @@ xml.dmt = {
 
 
 local function sorted_keys(a) local t = {} for k,v in pairs(a) do table.insert(t, k) end table.sort(t) return t end
-local function merge(a,b) local t = {} for k,v in pairs(a) do t[k] = v end for k,v in pairs(b) do t[k] = v end return t end
 
 local function find_end_of_string(str, offset) 
   local quote = str:sub(offset, offset)

@@ -3,6 +3,7 @@
 #include <mbedtls/x509_csr.h>
 #include <mbedtls/sha256.h>
 #include <stdio.h>
+#include <sys/inotify.h>
 
 #include <wtk.c>
 #include <server.c>
@@ -222,6 +223,69 @@ static int f_sha256(lua_State* L) {
   return 1;
 }
 
+static int f_monitor_new(lua_State *L) {
+  int fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+  lua_newtable(L);
+  lua_pushinteger(L, fd), lua_rawseti(L, -2, 1);
+  lua_newtable(L), lua_setfield(L, -2, "fds");
+  luaL_setmetatable(L, "wtk.c.monitor");
+  return 1;
+}
+
+static int f_monitor_add(lua_State* L) {
+  lua_rawgeti(L, 1, 1);
+  int fd = inotify_add_watch(lua_tointeger(L, -1), luaL_checkstring(L, 2), IN_CREATE | IN_MOVED_TO | IN_MOVED_FROM | IN_DELETE | IN_DELETE_SELF | IN_MODIFY);
+  if (fd < 0) {
+    lua_pushnil(L);
+    lua_pushfstring(L, "error adding watch: %s", strerror(errno));
+    return 2;
+  }
+  lua_pop(L, 1);
+  lua_getfield(L, 1, "fds");
+  lua_pushinteger(L, fd);
+  lua_pushvalue(L, 2);
+  lua_rawset(L, -3);
+  lua_pushvalue(L, 1);
+  return 1;
+}
+
+static int f_monitor_rm(lua_State* L) {
+  lua_rawgeti(L, 1, 1);
+  int fd = lua_tointeger(L, -1);
+  lua_pop(L, 1);
+  luaL_checkstring(L, 2);
+  lua_getfield(L, 1, "fds");
+  lua_pushvalue(L, 2);
+  lua_rawget(L, -2);
+  if (!lua_isnil(L, -1))
+    inotify_rm_watch(fd, lua_tointeger(L, -1));
+  return 0;
+}
+
+static int f_monitor_close(lua_State* L) {
+  lua_rawgeti(L, 1, 1);
+  close(lua_tointeger(L, -1));
+  lua_pushnil(L);
+  lua_rawseti(L, 1, 1);
+  return 0;
+}
+
+static int f_monitor_yield(lua_State* L) {
+  lua_newtable(L);
+  lua_rawgeti(L, 1, 1);
+  lua_setfield(L, -2, "fd");
+  return lua_yield(L, 1);
+}
+
+static const luaL_Reg monitor_lib[] = {
+  { "new",        f_monitor_new    },
+  { "add",        f_monitor_add    },
+  { "rm",         f_monitor_rm     },
+  { "close",      f_monitor_close  },
+  { "yield",      f_monitor_yield  },
+  { "__gc",       f_monitor_close  },
+  { NULL,         NULL }
+};
 
 static const luaL_Reg acme_lib[] = {
   { "keypair",    f_create_keypair   },
@@ -246,6 +310,12 @@ int main(int argc, char* argv[]) {
   lua_newtable(L);
   luaL_setfuncs(L, acme_lib, 0);
   lua_setglobal(L, "ACME");
+  luaL_newmetatable(L, "wtk.c.monitor");
+  luaL_setfuncs(L, monitor_lib, 0);
+  lua_pushvalue(L, -1);
+  lua_pushvalue(L, -1);
+  lua_setfield(L, -2, "__index");
+  lua_setglobal(L, "monitor");
   if (luaW_signal(L) || luaW_packlua(L, ".") || luaW_loadentry(L, "init") || luaW_run(L, argc, argv)) {
     fprintf(stderr, "%s\n", lua_tostring(L, -1));
     return -1;

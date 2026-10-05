@@ -5,7 +5,6 @@ local system = wtk.system
 local socket, sha1, base64 = driver.socket, driver.sha1, driver.base64
 local PACKET_SIZE = 4096
 
-local function merge(t1, t2) local t = {} for k,v in pairs(t1) do t[k] = v end for k,v in pairs(t2) do t[k] = v end return t end
 local Server = { Socket = driver.socket, sha1 = driver.sha1, base64 = driver.base64 }
 Server.__index = Server
 
@@ -115,9 +114,9 @@ function Server.Response:write(client)
   if self.code ~= 101 and not self.headers['content-length'] and self.headers['transfer-encoding'] ~= 'chunked' then client:close() end
   if client.server.verbose then
     if self.code >= 300 and self.code < 400 then
-      client.server.log:verbose("RES %s %s %s", self.code, client.peer, self.headers.location)
+      client.log:verbose("RES %s %s %s", self.code, client.peer, self.headers.location)
     else
-      client.server.log:verbose("RES %s %s", self.code, client.peer)
+      client.log:verbose("RES %s %s", self.code, client.peer)
     end
   end
 end
@@ -126,7 +125,7 @@ local Request = { }
 Server.Request = Request
 Request.__index = Request
 function Request.new(client) 
-  return setmetatable({ method = nil, client = client, path = nil, version = nil, headers = {}, buffer = {}, cookies = {}, responded = false, length_read = 0 }, Request) 
+  return setmetatable({ method = nil, client = client, path = nil, version = nil, headers = {}, buffer = {}, cookies = {}, responded = false, length_read = 0, log = client.log }, Request) 
 end
 function Request:__tostring() local s = {} table.insert(s, string.format("%s %s %s\r\n", self.method, self.path, self.version)) for k,v in pairs(self.headers) do table.insert(s, string.format("%s:%s",k,v)) end return table.concat(s, "\r\n") .. "\r\n" .. (self:body() or "") end
 function Request:parse_form(form)
@@ -165,7 +164,6 @@ function Request:parse_headers()
   for key,value in (self.headers.cookie or ""):gmatch("([^=;%s]+)=([^;]+)") do self.cookies[key] = value:gsub("%%([a-fA-F0-9][a-fA-F0-9])", function(e) return string.char(tonumber(e, 16)) end) end
   if #remainder > 0 then self.client.buffer = remainder end
   assert(self.method ~= "POST" or self.headers['content-length'], "malformed request, requires content-length")
-  self.client.server.log:verbose("REQ %s %s %s", self.method, self.path, self.client.peer)
   return self
 end
 function Request:websocket()
@@ -204,7 +202,7 @@ function Request:respond(code, headers, body)
   res:write(self.client)
   return res
 end
-function Request:redirect(path) return self:respond(302, { ["location"] = path }, '') end
+function Request:redirect(path, headers) return self:respond(302, merge({ ["location"] = path }, headers or {}), '') end
 function Request:file(path, headers)
   assert(path and not path:find("%.%."), "invalid path") 
   if not wtk.system.stat(path) then
@@ -280,7 +278,7 @@ end
 
 Server.Client = {}
 Server.Client.__index = Server.Client
-function Server.Client.new(server, socket) return setmetatable({ last_activity = os.time(), server = server, waiting = nil, socket = socket, responsed = false, peer = select(4, socket:peer()) }, Server.Client) end
+function Server.Client.new(server, socket) return setmetatable({ last_activity = os.time(), server = server, waiting = nil, socket = socket, responsed = false, peer = select(4, socket:peer()), log = server.log }, Server.Client) end
 function Server.Client:write(buf) 
   self.last_activity = os.time() 
   return self.socket:send(buf) 
@@ -327,7 +325,7 @@ function Server.Client:read(len)
   end
 end
 function Server.Client:close() 
-  self.server.log:verbose("Manually closing connnection.") 
+  self.log:verbose("Manually closing connnection.") 
   while true do
     local status, err = self.socket:close() 
     if err == "read" or err == "write" then 
@@ -373,7 +371,7 @@ function Server:default_error_handler(request, err, client, meta)
     msg = string.format("Unhandled Error: %s", err) 
     if request and not request.responded then request:respond(500, { ["Content-Type"] = "text/plain; charset=UTF-8" }, "500 Internal Server Error") end
   end
-  if self.verbose or not err.verbose then self.log:error("%s", (self.verbose and (self.very_verbose or code == 500)) and (msg .. "\n" .. meta.stack) or msg) end
+  if self.verbose or not err.verbose then (request and request.log or client.log):error("%s", (self.verbose and (self.very_verbose or code == 500)) and (msg .. "\n" .. meta.stack) or msg) end
   if not request then client:close() end
   if request and request.client.websocket then request.client.websocket:close() end
 end
@@ -385,11 +383,11 @@ function Server:accept()
     assert(self.clients < self.max_simultaneous_connections, "too many simultaneous connections")
     local client = Server.Client.new(self, socket)
     local protocol, incoming_bind, incoming_port, peer_host = socket:peer()
-    self.log:verbose("Incoming connection from '%s' on %s:%d", peer_host, incoming_bind, incoming_port or 0)
+    client.log:verbose("Incoming connection from '%s' on %s:%d", peer_host, incoming_bind, incoming_port or 0)
     self.clients = self.clients + 1
     client.job = self.loop:job(function()
       client:handshake()
-      self.log:verbose("Handshake complete for '%s' on %s:%d", peer_host, incoming_bind, incoming_port or 0)
+      client.log:verbose("Handshake complete for '%s' on %s:%d", peer_host, incoming_bind, incoming_port or 0)
       while not client.closed do
         local request
         try(function()
@@ -405,7 +403,7 @@ function Server:accept()
           try(function()
             self:error_handler(request, err.error, client, err)
           end, function(err)
-            self.log:error("Error in error handler: %s\n%s", err.error, err.stack)
+            client.log:error("Error in error handler: %s\n%s", err.error, err.stack)
           end)
         end)
         -- clear out buffer if it wasn't read
@@ -419,7 +417,7 @@ function Server:accept()
       while client.job:running() do
         local time_until_timeout = server.timeout - (os.time() - client.last_activity)
         if time_until_timeout <= 0 then
-          self.log:error("Killing inactive request; exceeded timeout.")
+          client.log:error("Killing inactive request; exceeded timeout.")
           client.job:kill()
         else
           coroutine.yield(time_until_timeout)
@@ -457,6 +455,7 @@ function Server:get_route(request)
 end
 
 function Server:default_handler(request)
+  request.log:verbose("REQ %s %s %s", request.method, request.path, request.client.peer)
   local route, arguments = self:get_route(request)
   if not route then return false end
   return true, route.handler(request, table.unpack(arguments))
@@ -494,8 +493,8 @@ function Server:delete(path, func) return self:route("DELETE", path, func) end
 
 Server.Log = {}
 Server.Log.__index = Server.Log
-function Server.Log.new(verbose) return setmetatable({ _verbose = verbose }, Server.Log) end
-function Server.Log:log(type, message, ...) wtk.io.stdout:write(string.format("[%5s][%s.%03d]: " .. message .. "\n", type, os.date("%Y-%m-%dT%H:%M:%S"), (math.floor(wtk.system.time() * 1000.0) % 1000), ...)):flush() end
+function Server.Log.new(verbose, stream) return setmetatable({ _verbose = verbose, _stream = stream or wtk.io.stdout }, Server.Log) end
+function Server.Log:log(type, message, ...) self._stream:write(string.format("[%5s][%s.%03d]: " .. message .. "\n", type, os.date("%Y-%m-%dT%H:%M:%S"), (math.floor(wtk.system.time() * 1000.0) % 1000), ...)):flush() end
 function Server.Log:verbose(message, ...) if self._verbose then self:log("VERB", message, ...) end end
 function Server.Log:info(message, ...) self:log("INFO", message, ...) end
 function Server.Log:error(message, ...) self:log("ERROR", message, ...) end
@@ -526,10 +525,10 @@ function Server.Template.parse(str, name)
     offset = e + 2
   end
   table.insert(constructs, literal_escape(str:sub(offset)))
-  local t = setmetatable({ __contexts = {}, __builtins = { table = table, tostring = tostring, ipairs = ipairs, pairs = pairs, pcall = pcall, merge = merge, escape = function(str) return str:gsub("\"", "&quot;") end } }, Server.Template)
+  local t = setmetatable({ __contexts = {}, __builtins = { table = table, tostring = tostring, ipairs = ipairs, print = print, pairs = pairs, pcall = pcall, merge = merge, escape = function(str) return str:gsub("\"", "&quot;") end } }, Server.Template)
   t.__builtins.set_context = function(value) t.__contexts[system.thread()] = value end
   local env = setmetatable({ }, { __index = function(_, k) return rawget(t.__builtins, k) or t.__contexts[system.thread()][k] end, __newindex = function(_, k, v) t.__contexts[system.thread()][k] = v end })
-  local template_contents = "return function(params) set_context(merge({}, params))  local __contents = {} pcall(function() " .. table.concat(constructs) .. " end) set_context(nil) return table.concat(__contents) end"
+  local template_contents = "return function(params) set_context(merge({}, params))  local __contents = {}  pcall(function() " .. table.concat(constructs) .. " end) set_context(nil) return table.concat(__contents) end"
   t.__render = assert(load(template_contents, "=" .. (name or "unknown template"), "bt", env))()
   return t
 end

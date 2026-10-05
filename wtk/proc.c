@@ -182,9 +182,9 @@ int luaopen_wtk_proc_c(lua_State* L) {
     local _kill = proc.kill\n\
     function proc:kill(sig) return _kill(self, sig) end\n\
     function proc:term(timeout)\n\
-        if not self:status() then self:kill('TERM') end\n\
+        if not self:status() then self:kill(SIGTERM) end\n\
         if not self:status() then coroutine.yield(timeout) end\n\
-        if not self:status() then self:kill('KILL') end\n\
+        if not self:status() then self:kill(SIGKILL) end\n\
         return self:join()\n\
     end\n\
     function proc:join(timeout)\n\
