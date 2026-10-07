@@ -233,11 +233,25 @@ static int f_monitor_new(lua_State *L) {
 }
 
 static int f_monitor_add(lua_State* L) {
+  const char* str = luaL_optstring(L, 3, "");
+  int flags = 0;
+  if (strstr(str, "create"))
+    flags |= IN_CREATE;
+  if (strstr(str, "moved_to"))
+    flags |= IN_MOVED_TO;
+  if (strstr(str, "moved_from"))
+    flags |= IN_MOVED_FROM;
+  if (strstr(str, "delete"))
+    flags |= IN_DELETE;
+  if (strstr(str, "delete_self"))
+    flags |= IN_DELETE_SELF;
+  if (strstr(str, "modify"))
+    flags |= IN_MODIFY;
   lua_rawgeti(L, 1, 1);
-  int fd = inotify_add_watch(lua_tointeger(L, -1), luaL_checkstring(L, 2), IN_CREATE | IN_MOVED_TO | IN_MOVED_FROM | IN_DELETE | IN_DELETE_SELF | IN_MODIFY);
+  int fd = inotify_add_watch(lua_tointeger(L, -1), luaL_checkstring(L, 2), flags);
   if (fd < 0) {
     lua_pushnil(L);
-    lua_pushfstring(L, "error adding watch: %s", strerror(errno));
+    lua_pushfstring(L, "error adding watch to %s: %s", luaL_checkstring(L, 2), strerror(errno));
     return 2;
   }
   lua_pop(L, 1);
@@ -270,11 +284,35 @@ static int f_monitor_close(lua_State* L) {
   return 0;
 }
 
+static int f_monitor_yieldk(lua_State* L, int status, lua_KContext ctx) {
+  lua_rawgeti(L, 1, 1);
+  int fd = lua_tointeger(L, -1);
+  lua_pop(L, 1);
+  char buf[4096];
+  int size = read(fd, buf, sizeof(buf));
+  if (size == -1) {
+    lua_pushnil(L);
+    lua_pushstring(L, strerror(errno));
+    return 2;
+  }
+  lua_newtable(L);
+  const struct inotify_event *event = NULL;
+  for (char *ptr = buf; ptr < buf + size; ptr += sizeof(struct inotify_event) + event->len) {
+    event = (const struct inotify_event *) ptr;
+    if (event->len) {
+      lua_pushstring(L, event->name);
+      lua_rawseti(L, -2, lua_rawlen(L, -2) + 1);
+    }
+  }
+  return 1;
+}
+
+
 static int f_monitor_yield(lua_State* L) {
   lua_newtable(L);
   lua_rawgeti(L, 1, 1);
   lua_setfield(L, -2, "fd");
-  return lua_yield(L, 1);
+  return lua_yieldk(L, 1, 0, f_monitor_yieldk);
 }
 
 static const luaL_Reg monitor_lib[] = {

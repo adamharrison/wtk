@@ -202,12 +202,12 @@ function Server.Request:forward(uri, options)
 end
 
 function Server:get_host(host)
-  host = host:gsub(":.*$", "")
+  if host then host = host:gsub(":.*$", "") end
   for _, server_host in ipairs(self.hosts) do
     if not server_host.hostname then return server_host end
     for _, hostname in ipairs(server_host.hostname) do
       hostname = hostname:gsub("%.", "%%."):gsub("%-", "%%-"):gsub("%*", ".*")
-      if host:find("^" .. hostname .. "$") then
+      if host and host:find("^" .. hostname .. "$") then
         return server_host
       end
     end
@@ -234,6 +234,14 @@ function Server:get_log(host, server, request)
 
 end
 
+
+local proxy = {}
+proxy.agent = Client.new({ cookies = false })
+proxy.log = Server.Log.new(args.verbose)
+if args.quiet then proxy.log.log = function() end end
+proxy.servers = {}
+proxy.challenges = {}
+
 function Server.Client:handshake()
   if self.server.ssl then
     local status, err
@@ -242,19 +250,13 @@ function Server.Client:handshake()
         local host = assert(self.server:get_host(hostname), "can't find host " .. hostname)
         return assert(host.ssl and host.ssl.key, "can't find ssl key for " .. hostname), assert(host.ssl and host.ssl.cert, "can't find ssl cert for "  .. hostname)
       end)
-      if status then break end
+      print("STATUS", status, err)
       self:yield(assert((err == "write" or err == "read") and err, err))
     end
   end
 end
 
 
-local proxy = {}
-proxy.agent = Client.new({ cookies = false })
-proxy.log = Server.Log.new(args.verbose)
-if args.quiet then proxy.log.log = function() end end
-proxy.servers = {}
-proxy.challenges = {}
 
 function proxy.parse_text(text) return text:find("{[{%%]") and Server.Template.parse(text) or text end
 function proxy.render_text(text, request) 
@@ -346,15 +348,15 @@ function proxy.handler(self, request)
     request.log:verbose("Unknown target action.", target.code)
     error({ code = 404 })
   end
-  request.log:flush()
+  request.log._stream:flush()
 end
 
-local function load_handler(handler)
+local function load_handler(handler, param_names)
   if handler:find("%.lua$") then
     handler = assert(loadfile(handler))()
     assert(type(handler) == 'function', "Map file does not return a function.")
   else
-    handler = assert(load("return function(server, request) " .. handler .. " end", "=handler"))()
+    handler = assert(load("return function(" .. table.concat(param_names, ", ") .. ") " .. handler .. " end", "=handler"))()
   end
   return handler
 end
@@ -376,9 +378,9 @@ local function decode_hosts(hosts)
       for k,v in pairs(host) do if location[k] == nil then location[k] = compute_templates(v) end end
     end
     if host.hostname then host.hostname = arrayify(host.hostname) end
-    if host.handler then host.handler = load_handler(host.handler) end
+    if host.handler then host.handler = load_handler(host.handler, { "server", "request" }) end
     if host.execute and not host.execute.idle then loop:add(function() host.running = proxy.startup_process(host.execute) end) end
-    if host.jobs then host.jobs = map(load_handler, host.jobs) end
+    if host.jobs then host.jobs = map(function(e) return load_handler(e, { "host", "proxy" }) end, host.jobs) end
     compute_templates(host)
   end
   return hosts
@@ -416,7 +418,7 @@ local function load_config(config)
     end
     for _, host in ipairs(hosts or {}) do host.jobs = map(function(v) 
       proxy.log:verbose("Spinning up job for " .. host.hostname[1] .. "...")
-      return loop:job(function() v(host) end):fail(function(err) proxy.log:error("%s", err) proxy.log:error("%s", err.stack) end)
+      return loop:job(function() coroutine.yield() v(host, proxy) end):fail(function(err) proxy.log:error("%s", err) proxy.log:error("%s", err.stack) end)
     end, host.jobs or {}) end
   end
   if add_acme then table.insert(proxy.servers, Server.new(merge(args, { name = "ACME Server", port = 80, host = "0.0.0.0", handler = proxy.handler })):add(loop)) end
@@ -542,10 +544,9 @@ if args.acme then
   end, lenience = 30*24*60*60, configdir = "./.acme", log = proxy.log })
   local certificate_directory_path = proxy.acme.configdir .. "/certificates"
   assert(args.acme:match("%w@%w+%.%w+"), "--acme should take an email")
-  
   function proxy.get_certificate(host, hostnames, key, cert)
     if not key then 
-      local key_path = host and host.ssl.key_path or certificate_directory_path .. "/" .. hostnames[1] .. ".key"
+      local key_path = host and host.ssl and host.ssl.key_path or certificate_directory_path .. "/" .. hostnames[1] .. ".key"
       if not system.stat(key_path) then 
         proxy.log:info("Generating %s private key, storing at %s (this can take a while on slower systems)...", hostnames[1], key_path)
         key = assert(proc.run(function() local private_key = assert(ACME.keypair()) io.stdout:write(private_key):close() end))
@@ -555,7 +556,7 @@ if args.acme then
         key = assert(wtk.io.file(key_path, "rb")):read("*all")
       end
     end
-    local cert_path = host and host.ssl.cert_path or certificate_directory_path .. "/" .. hostnames[1] .. ".crt"
+    local cert_path = host and host.ssl and host.ssl.cert_path or certificate_directory_path .. "/" .. hostnames[1] .. ".crt"
     if not cert then
       cert = system.stat(cert_path) and assert(wtk.io.file(cert_path, "rb")):read("*all")
     end
@@ -590,7 +591,7 @@ if args.acme then
             if host.ssl then
               local hostnames = filter(function(h) return not h:find("%*") end, host.hostname)
               if #hostnames > 0 then
-                host.ssl.key, host.ssl.cert = proxy.get_certificates(host, hostnames, host.ssl.key, host.ssl.cert)                
+                host.ssl.key, host.ssl.cert = proxy.get_certificate(host, hostnames, host.ssl.key, host.ssl.cert)                
               end
             end
           end
