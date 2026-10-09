@@ -230,10 +230,6 @@ function Server:get_location(host, request)
   return nil
 end
 
-function Server:get_log(host, server, request)
-
-end
-
 
 local proxy = {}
 proxy.agent = Client.new({ cookies = false })
@@ -248,9 +244,13 @@ function Server.Client:handshake()
     while true do
       status, err = self.socket:handshake(function(hostname)
         local host = assert(self.server:get_host(hostname), "can't find host " .. hostname)
-        return assert(host.ssl and host.ssl.key, "can't find ssl key for " .. hostname), assert(host.ssl and host.ssl.cert, "can't find ssl cert for "  .. hostname)
+        local key = host.ssl and host.ssl.key
+        if type(key) == 'function' then key = host.ssl.key(hostname) end
+        local cert = host.ssl.cert and host.ssl.cert
+        if type(cert) == 'function' then cert = host.ssl.cert(hostname) end
+        return assert(key, "can't find ssl key for " .. hostname), assert(cert, "can't find ssl cert for "  .. hostname)
       end)
-      print("STATUS", status, err)
+      if status then break end
       self:yield(assert((err == "write" or err == "read") and err, err))
     end
   end
@@ -544,7 +544,7 @@ if args.acme then
   end, lenience = 30*24*60*60, configdir = "./.acme", log = proxy.log })
   local certificate_directory_path = proxy.acme.configdir .. "/certificates"
   assert(args.acme:match("%w@%w+%.%w+"), "--acme should take an email")
-  function proxy.get_certificate(host, hostnames, key, cert)
+  function proxy.get_certificate(host, hostnames, key, cert, renew)
     if not key then 
       local key_path = host and host.ssl and host.ssl.key_path or certificate_directory_path .. "/" .. hostnames[1] .. ".key"
       if not system.stat(key_path) then 
@@ -560,7 +560,7 @@ if args.acme then
     if not cert then
       cert = system.stat(cert_path) and assert(wtk.io.file(cert_path, "rb")):read("*all")
     end
-    if #hostnames > 0 and (not cert or (assert(ACME.cert(cert)).valid_to - os.time()) < proxy.acme.lenience) then
+    if renew and #hostnames > 0 and (not cert or (assert(ACME.cert(cert)).valid_to - os.time()) < proxy.acme.lenience) then
       proxy.log:info("%s SSL certificate for %s...", cert and "Generating" or "Renewing", table.concat(hostnames, ", "))
       cert = proxy.acme:get_certificate(args.acme, key, hostnames)
       proxy.log:info("Successfully renewed SSL certificate for %s; writing to %s.", table.concat(arrayify(hostnames), ", "), cert_path)
@@ -592,6 +592,12 @@ if args.acme then
               local hostnames = filter(function(h) return not h:find("%*") end, host.hostname)
               if #hostnames > 0 then
                 host.ssl.key, host.ssl.cert = proxy.get_certificate(host, hostnames, host.ssl.key, host.ssl.cert)                
+              end
+              local wildcards = filter(function(h) return h:find("%*") end, host.hostname)
+              if #wildcards > 0 then
+                local key_cache, cert_cache = {}, {}
+                host.ssl.key = function(hostname) key_cache[hostname] = key_cache[hostname] or assert(io.open(certificate_directory_path .. "/" .. hostname  .. ".key", "rb")):read("*all") return key_cache[hostname] end
+                host.ssl.cert = function(hostname) cert_cache[hostname] = cert_cache[hostname] or assert(io.open(certificate_directory_path .. "/" .. hostname  .. ".crt", "rb")):read("*all") return cert_cache[hostname] end
               end
             end
           end
