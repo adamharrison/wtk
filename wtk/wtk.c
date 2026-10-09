@@ -386,10 +386,12 @@ static int f_system_ls(lua_State* L) {
 }
 
 static int f_system_mkdir(lua_State* L) {
-	if (mkdir(luaL_checkstring(L, 1), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH)) {
-		lua_pushnil(L);
-		lua_pushstring(L, strerror(errno));
-		return 2;
+	for (int i = 1; i <= lua_gettop(L); ++i) {
+		if (mkdir(luaL_checkstring(L, i), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH)) {
+			lua_pushnil(L);
+			lua_pushstring(L, strerror(errno));
+			return 2;
+		}
 	}
 	lua_pushboolean(L, 1);
 	return 1;
@@ -721,7 +723,7 @@ int luaopen_wtk_c(lua_State* L) {
 	package.loaded['wtk.c.loop'] = wtk.loop\n\
 	package.loaded['wtk.c.system'] = wtk.system\n\
 	wtk.system.mtime = function(path) local s, err = wtk.system.stat(path) if not s then return nil, err end return s.mtime end\n\
-	wtk.system.rmrf = function(...) local s, err for _, path in ipairs({ ... }) do s, err = wtk.system.stat(path) if s and s.type == 'dir' then s, err = wtk.system.rmrf(path .. '/' .. s.name) if s then s, err = wtk.system.rmdir(path) end else s, err = os.remove(path) end if not s then break end end return s, err end\n\
+	wtk.system.rmrf = function(...) local s, err for _, path in ipairs({ ... }) do s, err = wtk.system.stat(path) if s and s.type == 'dir' then for _, e in ipairs(wtk.system.ls(path)) do s, err = wtk.system.rmrf(path .. '/' .. e.name) if not s then break end end if s then s, err = wtk.system.rmdir(path) end elseif s then s, err = os.remove(path) end if not s then break end end return s, err end\n\
 	function wtk.pargs(arguments, options, short_options)\n\
 		local args = {}\n\
 		local i = 1\n\
