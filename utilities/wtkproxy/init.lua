@@ -180,14 +180,14 @@ function Server.Request:forward(uri, options)
     headers['x-forwarded-proto'] = self.client.server.host and self.client.server.host:find("^unix://") and "unix" or (self.client.server.ssl and "https" or "http")
     headers['host'] = nil
   end
-  local res = agent:request({ 
+  local res = assert(agent:request({ 
     log = self.client.server.vverbose and function(chunk, direction) self.log:verbose("%s %s", direction == "write" and ">" or "<", chunk) end, 
     method = options.method or self.method, 
     url = uri, 
     path = self.path,
     headers = headers,
     body = options.method ~= "GET" and options.method ~= "HEAD" and function() return self:read(PACKET_SIZE) end 
-  })
+  }), { code = 502 })
   if res.code == 101 and res.headers.upgrade == "websocket" then 
     self.log:verbose("Request forward transforming to websocket.")
     self:respond(Server.Response.new(options.code or res.code, res.headers))
@@ -544,7 +544,7 @@ if args.acme then
   end, lenience = 30*24*60*60, configdir = "./.acme", log = proxy.log })
   local certificate_directory_path = proxy.acme.configdir .. "/certificates"
   assert(args.acme:match("%w@%w+%.%w+"), "--acme should take an email")
-  function proxy.get_certificate(host, hostnames, key, cert, renew)
+  function proxy.get_certificate(host, hostnames, key, cert)
     if not key then 
       local key_path = host and host.ssl and host.ssl.key_path or certificate_directory_path .. "/" .. hostnames[1] .. ".key"
       if not system.stat(key_path) then 
@@ -560,7 +560,7 @@ if args.acme then
     if not cert then
       cert = system.stat(cert_path) and assert(wtk.io.file(cert_path, "rb")):read("*all")
     end
-    if renew and #hostnames > 0 and (not cert or (assert(ACME.cert(cert)).valid_to - os.time()) < proxy.acme.lenience) then
+    if #hostnames > 0 and (not cert or (assert(ACME.cert(cert)).valid_to - os.time()) < proxy.acme.lenience) then
       proxy.log:info("%s SSL certificate for %s...", cert and "Generating" or "Renewing", table.concat(hostnames, ", "))
       cert = proxy.acme:get_certificate(args.acme, key, hostnames)
       proxy.log:info("Successfully renewed SSL certificate for %s; writing to %s.", table.concat(arrayify(hostnames), ", "), cert_path)
@@ -591,7 +591,7 @@ if args.acme then
             if host.ssl then
               local hostnames = filter(function(h) return not h:find("%*") end, host.hostname)
               if #hostnames > 0 then
-                host.ssl.key, host.ssl.cert = proxy.get_certificate(host, hostnames, host.ssl.key, host.ssl.cert)                
+                host.ssl.key, host.ssl.cert = proxy.get_certificate(host, hostnames, host.ssl.key, host.ssl.cert)
               end
               local wildcards = filter(function(h) return h:find("%*") end, host.hostname)
               if #wildcards > 0 then
