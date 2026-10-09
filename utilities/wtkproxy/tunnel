@@ -1,0 +1,35 @@
+#!/bin/bash
+# To be used with wtkproxy with the following configuration:
+# Replace $FORWARDERHOSTNAME with the external hostname.
+# 
+# {"servers": [{
+#   "http": ["0.0.0.0:80"],
+#   "https": ["0.0.0.0:443"],
+#   "hosts": [{
+#     "hostname": ["*.forwarder.$FORWARDERHOSTNAME"],
+#     "forward": "unix://forwards/{{ request.host:gsub('%..*', '') }}.socket",
+#     "log": "logs/{{ request.host:gsub('%..*', '') }}.log",
+#     "ssl": true,
+#     "jobs": [```local wtk = require 'wtk.c'
+#       wtk.system.rmrf('fowards', 'logs')
+#       wtk.system.mkdir('forwards', 'logs')
+#       local monitor = assert(wtk.monitor.new():add('forwards', "create"))
+#       while true do
+#         for _, f in ipairs(map(function(e) return e.name:match('^(%w+)%.socket') end, wtk.system.ls('forwards') or {})) do
+#           proxy.log:verbose("Checking certificate %s...", f)
+#           proxy.get_certificate(host, { f .. '.forwarder.$FORWARDERHOSTNAME' })
+#         end
+#         monitor:yield()
+#       end
+#      ```]
+#   }]
+# }]}
+
+
+PORT="$1"
+SUBDOMAIN="$2"
+[[ "$SUBDOMAIN" == "" ]] && SUBDOMAIN="$USER"
+TARGET="$SUBDOMAIN.$FORWARDERHOSTNAME"
+
+echo "Forwarding $TARGET to 127.0.0.1:$PORT..."
+ssh root@$TARGET -R /var/www/forwards/$SUBDOMAIN.socket:127.0.0.1:$PORT "rm -f /var/www/logs/$SUBDOMAIN.log && touch /var/www/logs/$SUBDOMAIN.log && tail -f /var/www/logs/$SUBDOMAIN.log"
