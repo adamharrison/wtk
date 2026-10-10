@@ -75,7 +75,13 @@ function Server.Response:write_header(client)
   if self.body and type(self.body) == 'string' and not self.headers['content-length'] and self.headers['transfer-encoding'] ~= 'chunked' then self.headers['content-length'] = #self.body end
   if not self.headers['connection'] or self.headers['connection']:find("^%s*$") then self.headers['connection'] = 'keep-alive' end
   if not self.headers['date'] or self.headers['date']:find("^%s*$") then self.headers['date'] = os.date("!%a, %d %b %Y %H:%M:%S GMT") end
-  for key,value in pairs(self.headers) do table.insert(parts, string.format("%s: %s\r\n", key, value)) end
+  for key,value in pairs(self.headers) do 
+    if type(value) == 'table' then
+      for _, part in ipairs(value) do table.insert(parts, string.format("%s: %s\r\n", key, part)) end 
+    else
+      table.insert(parts, string.format("%s: %s\r\n", key, value)) 
+    end
+  end
   table.insert(parts, "\r\n")
   client:write_block(table.concat(parts))
 end
@@ -121,11 +127,12 @@ function Server.Response:write(client)
   end
 end
 
+Server.CookieJar = { __index = function(self, k) return rawget(self.__outgoing, k) or rawget(self.__incoming, k) end, __newindex = function(self, k, v) rawset(self.__outgoing, k, v or { ['max-age'] = 0, value = '' }) end }
 local Request = { }
 Server.Request = Request
 Request.__index = Request
 function Request.new(client) 
-  return setmetatable({ method = nil, client = client, path = nil, version = nil, headers = {}, buffer = {}, cookies = {}, responded = false, length_read = 0, log = client.log }, Request) 
+  return setmetatable({ method = nil, client = client, path = nil, version = nil, headers = {}, buffer = {}, cookies = setmetatable({ __outgoing = {}, __incoming = {} }, Server.CookieJar), responded = false, length_read = 0, log = client.log }, Request) 
 end
 function Request:__tostring() local s = {} table.insert(s, string.format("%s %s %s\r\n", self.method, self.path, self.version)) for k,v in pairs(self.headers) do table.insert(s, string.format("%s:%s",k,v)) end return table.concat(s, "\r\n") .. "\r\n" .. (self:body() or "") end
 function Request:parse_form(form)
@@ -161,7 +168,7 @@ function Request:parse_headers()
   self.path = self.path:gsub("%%([a-fA-F0-9][a-fA-F0-9])", function(e) return string.char(tonumber(e, 16)) end)
   if self.search then self.params = self:parse_form(self.search) end
   for key,value in headers:gmatch("([^%:]+):%s*(.-)\r\n") do self.headers[key:lower()] = value end
-  for key,value in (self.headers.cookie or ""):gmatch("([^=;%s]+)=([^;]+)") do self.cookies[key] = value:gsub("%%([a-fA-F0-9][a-fA-F0-9])", function(e) return string.char(tonumber(e, 16)) end) end
+  for key,value in (self.headers.cookie or ""):gmatch("([^=;%s]+)=([^;]+)") do self.cookies.__incoming[key] = value:gsub("%%([a-fA-F0-9][a-fA-F0-9])", function(e) return string.char(tonumber(e, 16)) end) end
   if #remainder > 0 then self.client.buffer = remainder end
   assert(self.method ~= "POST" or self.headers['content-length'], "malformed request, requires content-length")
   return self
@@ -194,8 +201,12 @@ end
 function Request:respond(code, headers, body) 
   if headers and not headers['set-cookie'] and self.cookies then 
     local cookies = {}
-    for key,value in pairs(self.cookies) do table.insert(cookies, key .. "=" .. tostring(value):gsub("[%c:/?#%[%]@!$&'\"%(%)*+,;=%%]", function(e) return "%" .. string.format("%02x", e:byte(1)) end)) end
-    if #cookies > 0 then headers['set-cookie'] = table.concat(cookies, ';') .. "; Path=/" end
+    for key,value in pairs(self.cookies.__outgoing) do 
+      local contents = type(value) == 'table' and value.value or value
+      local attributes = type(value) == 'table' and map(function(e) local v = value[e:lower()] return v and e:lower() .. (type(v) ~= true and ("=" .. v) or "") end, filter(function(e) return value[e:lower()] end, { "Domain", "Expires", "HttpOnly", "Max-Age", "Paritioned", "Path", "Secure", "SameSite" })) or { "Path=/" }
+      table.insert(cookies, key .. "=" .. tostring(contents):gsub("[%c:/?#%[%]@!$&'\"%(%)*+,;=%%]", function(e) return "%" .. string.format("%02x", e:byte(1)) end) .. "; " .. table.concat(attributes, ";"))
+    end
+    if #cookies > 0 then headers['set-cookie'] = cookies end
   end
   local res = (type(code) == 'table' and getmetatable(code) == Server.Response and code or Server.Response.new(code, headers, body))
   self.responded = true 
