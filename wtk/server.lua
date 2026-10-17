@@ -215,7 +215,7 @@ function Request:respond(code, headers, body)
 end
 function Request:redirect(path, headers) return self:respond(302, merge({ ["location"] = path }, headers or {}), '') end
 function Request:file(path, headers)
-  assert(path and not path:find("%.%."), "invalid path") 
+  assert(path and not path:find("%.%.%/"), "invalid path") 
   if not wtk.system.stat(path) then
     return self:respond(200, merge({ ['content-type'] = self.client.server:mimetype(path) }, headers or {}), assert(packed and packed[path], { code = 404 }))
   end
@@ -515,25 +515,26 @@ Server.Template = {}
 Server.Template.__index = Server.Template
 function Server.Request:template(path, variables)  local t = self.client.server.templates[path] if not t or self.client.server.debug then t = Server.Template.parse(assert(io.open(path), { code = 404 }):read("*all"), path) self.client.server.templates[path] = t end local res = t:render(merge(params or {}, { request = self })) return self:respond(200, { ["Content-Type"] = "text/html; charset=UTF-8", ["Content-Length"] = #res }, res) end
 local function literal_escape(str) return 'table.insert(__contents, "' .. (str:match("^(%s+)") or ""):gsub("\n", "\\n") .. '" .. [=[' .. str:gsub("]=]", ']=] .. "]=]" .. [=[') .. ']=])' end
+local function trim(str, trim) return trim and str:gsub("^%s+", "") or str end
 function Server.Template:render(params) return self.__render(params) end
 function Server.Template.parse(str, name)
   local constructs = {}
-  local offset, e = 1
+  local offset, s, e = 1
   while true do
-    local sc = str:find("{%%", offset)
-    local so = str:find("{{", offset)
+    local sc, ec, ctrim = str:find("{%%%s*(%-?)", offset)
+    local so, eo, otrim = str:find("{{%s*(%-?)", offset)
     if sc and (not so or sc < so) then
-      table.insert(constructs, literal_escape(str:sub(offset, sc - 1)))
-      e = assert(str:find("%%}", sc + 2), "can't find closing control block")
-      table.insert(constructs, str:sub(sc + 2, e - 1))
+      table.insert(constructs, literal_escape(trim(str:sub(offset, sc - 1), ctrim)))
+      s, e, _, ctrim = str:find("(%-?)%%}", ec)
+      table.insert(constructs, trim(str:sub(ec, assert(s, "can't find closing control block") - 1), ctrim))
     elseif so and (not sc or so < sc) then
-      table.insert(constructs, literal_escape(str:sub(offset, so - 1)))
-      e = assert(str:find("}}", so + 2), "can't find closing output block")
-      table.insert(constructs, "table.insert(__contents, tostring(" .. str:sub(so + 2, e - 1) .. "))")
+      table.insert(constructs, literal_escape(trim(str:sub(offset, so - 1), otrim)))
+      s, e, _, otrim = str:find("(%-?)}}", eo)
+      table.insert(constructs, "table.insert(__contents, tostring(" .. trim(str:sub(eo, assert(s, "can't find closing output block") - 1), otrim) .. "))")
     else
       break
     end
-    offset = e + 2
+    offset = e + 1
   end
   table.insert(constructs, literal_escape(str:sub(offset)))
   local t = setmetatable({ __contexts = {}, __builtins = { table = table, tostring = tostring, ipairs = ipairs, print = print, pairs = pairs, pcall = pcall, merge = merge, escape = function(str) return str:gsub("\"", "&quot;") end } }, Server.Template)
