@@ -214,6 +214,7 @@ function Request:respond(code, headers, body)
   return res
 end
 function Request:redirect(path, headers, body) return self:respond(302, merge({ ["location"] = path }, headers or {}), body or '') end
+function Request:audio(path, headers) return self:respond(200, merge({ ["Content-Type"] = "text/html; charset=UTF-8" }, headers or {}), "<html><style>body { background: #000; height: 100vh; display: flex; justify-content: center; align-items:center; }</style><body><audio controls autoplay src='" .. path .. "'></audio></body></html>") end
 function Request:file(path, headers)
   assert(path and not path:find("%.%.%/"), "invalid path") 
   if not wtk.system.stat(path) then

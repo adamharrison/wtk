@@ -805,13 +805,13 @@ int luaopen_wtk_c(lua_State* L) {
 			end\n\
 			print(\"(void*)0, (void*)0, (void*)0\\n};\")")
 		) {
-			fprintf(stderr, "Error loading packer: %s\n", lua_tostring(L, -1));
+			fprintf(stderr, "error loading packer: %s\n", lua_tostring(L, -1));
 			return -1;
 		}
 		for (int i = 1; i < argc; ++i)
 			lua_pushstring(L, argv[i]);
 		if (lua_pcall(L, argc - 1, 0, 0)) {
-			fprintf(stderr, "Error running packer: %s\n", lua_tostring(L, -1));
+			fprintf(stderr, "error running packer: %s\n", lua_tostring(L, -1));
 			return -1;
 		}
 		return 0;
