@@ -198,20 +198,20 @@ static int f_client_socket_openk(lua_State* L, int status, lua_KContext ctx) {
   lua_getfield(L, 1, "__c");
   client_socket_t* c = lua_touserdata(L, -1);
   const char* protocol = luaL_checkstring(L, 2);
-  const char* hostname = luaL_checkstring(L, 3);
+  const char* hostname = luaL_optstring(L, 3, NULL);
   const char* ip = luaL_checkstring(L, 4);
   int port = strcmp(protocol, "unix") != 0 ? luaL_checkinteger(L, 5) : -1;
   int blocking = lua_toboolean(L, 6);
   char err[MAX_ERROR_SIZE]={0};
   switch (c->state) {
     case STATE_INIT: {
-			if (inet_aton(ip, &c->addr.sin_addr) == 0) {
-				snprintf(err, sizeof(err), "improperly formatted ip %s: %s", ip, strerror(errno));
-				break;
-			}
       if (strcmp(protocol, "unix") == 0) 
 				c->fd = socket(AF_UNIX, SOCK_STREAM, 0);
       else {
+        if (!ip || inet_aton(ip, &c->addr.sin_addr) == 0) {
+          snprintf(err, sizeof(err), "improperly formatted ip %s: %s", ip, strerror(errno));
+          break;
+        }
         c->addr.sin_family = AF_INET;
 				c->addr.sin_port = htons(port);
 				c->fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -238,10 +238,10 @@ static int f_client_socket_openk(lua_State* L, int status, lua_KContext ctx) {
       if (strcmp(protocol, "unix") == 0) {
 				struct sockaddr_un path = {0};
 				path.sun_family = AF_UNIX;
-				strncpy(path.sun_path, hostname, sizeof(path.sun_path) - 1);
+				strncpy(path.sun_path, ip, sizeof(path.sun_path) - 1);
 				ret = connect(c->fd, (struct sockaddr *) &path, sizeof(path));
 				if (ret == -1 && (errno != EAGAIN && errno != EWOULDBLOCK && errno != EALREADY && errno != EINPROGRESS)) {
-					snprintf(err, sizeof(err), "can't connect to unix socket %s: %s", hostname, strerror(errno));
+					snprintf(err, sizeof(err), "can't connect to unix socket %s: %s", ip, strerror(errno));
 					break;
 				}
 			} else {
@@ -585,7 +585,7 @@ int luaopen_wtk_client_c(lua_State* L) {
       local protocol, hostname, implied_port, explicit_port, remainder = socket.componentsURI(options.url)\n\
       local lines = {}\n\
       local bytes_written, err\n\
-      table.insert(lines, string.format(\"%s %s HTTP/1.1\", options.method, ((options.path and socket.escapeURI(options.path)) or remainder or '/')))\n\
+      table.insert(lines, string.format(\"%s %s HTTP/1.1\", options.method, ((options.path and socket.escapeURI(options.path)) or remainder or '/') .. (options.search or '')))\n\
       for k, v in pairs(options.headers) do table.insert(lines, k .. ':' .. v) end\n\
       table.insert(lines, '')\n\
       table.insert(lines, '')\n\
@@ -634,7 +634,7 @@ int luaopen_wtk_client_c(lua_State* L) {
     function socket.resolver.new(target, blocking)\n\
 			if not target then\n\
 				local f = wtk.io.file('/etc/resolv.conf', 'rb')\n\
-				target = f and f:read('*all'):match('^%s*nameserver%s+(%S+)') or '127.0.0.53'\n\
+				target = f and f:read('*all'):match('nameserver%s+(%S+%.%S+%.%S+%.%S+)') or '127.0.0.53'\n\
 				if f then f:close() end\n\
 			end\n\
 			return setmetatable(assert(socket:open('raw', target, target, 53, blocking)), socket.resolver)\n\
