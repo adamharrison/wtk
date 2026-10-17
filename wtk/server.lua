@@ -513,7 +513,10 @@ function Server.Log:warn(message, ...) self:log("WARN", message, ...) end
 
 Server.Template = {}
 Server.Template.__index = Server.Template
-function Server.Request:template(path, variables)  local t = self.client.server.templates[path] if not t or self.client.server.debug then t = Server.Template.parse(assert(io.open(path), { code = 404 }):read("*all"), path) self.client.server.templates[path] = t end local res = t:render(merge(params or {}, { request = self })) return self:respond(200, { ["Content-Type"] = "text/html; charset=UTF-8", ["Content-Length"] = #res }, res) end
+function Server.Request:template(path, params) 
+  self.client.server.templates[path] = not self.client.server.debug and self.client.server.templates[path] or Server.Template.parse(assert(packed and packed[path] or assert(wtk.io.file(path), { code = 404 }):read("*all"), { code = 404 }), path) 
+  return self:respond(200, { ["Content-Type"] = "text/html; charset=UTF-8" }, self.client.server.templates[path]:render(merge(params or {}, { request = self }))) 
+end
 local function literal_escape(str) return 'table.insert(__contents, "' .. (str:match("^(%s+)") or ""):gsub("\n", "\\n") .. '" .. [=[' .. str:gsub("]=]", ']=] .. "]=]" .. [=[') .. ']=])' end
 local function trim(str, trim) return trim and str:gsub("^%s+", "") or str end
 function Server.Template:render(params) return self.__render(params) end
