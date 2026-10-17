@@ -213,7 +213,7 @@ function Request:respond(code, headers, body)
   res:write(self.client)
   return res
 end
-function Request:redirect(path, headers) return self:respond(302, merge({ ["location"] = path }, headers or {}), '') end
+function Request:redirect(path, headers, body) return self:respond(302, merge({ ["location"] = path }, headers or {}), body or '') end
 function Request:file(path, headers)
   assert(path and not path:find("%.%.%/"), "invalid path") 
   if not wtk.system.stat(path) then

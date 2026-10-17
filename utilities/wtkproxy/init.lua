@@ -341,9 +341,9 @@ function proxy.handler(self, request)
     local redirect = proxy.render_text(target.redirect, request)
     request.log:verbose("Redirecting to %s.", redirect)
     request:redirect(redirect, headers)
-  elseif target.code then
-    request.log:verbose("Responding with code %d.", target.code)
-    request:respond(tonumber(target.code), headers, proxy.render_text(target.body or '', request))
+  elseif target.code or target.body then
+    request.log:verbose("Responding with code %d.", target.code or 200)
+    request:respond(tonumber(target.code or 200), headers, proxy.render_text(target.body or '', request))
   else
     request.log:verbose("Unknown target action.", target.code)
     error({ code = 404 })
