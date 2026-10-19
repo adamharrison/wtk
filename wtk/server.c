@@ -295,7 +295,7 @@ static int f_server_socket_bind(lua_State *L) {
 		in_bind_addr.sin_family = AF_INET;
 		in_bind_addr.sin_addr.s_addr = INADDR_ANY;
 		if (inet_aton(host, &in_bind_addr.sin_addr) == 0)
-			return luaL_error(L, "Unable to parse address: %s", host);
+			return luaL_error(L, "unable to parse address: %s", host);
 		in_bind_addr.sin_port = htons(luaL_checkinteger(L, 2));
 		bind_addr = (struct sockaddr*)&in_bind_addr;
 		addr_len = sizeof(in_bind_addr);
@@ -304,12 +304,12 @@ static int f_server_socket_bind(lua_State *L) {
   setsockopt(sock->fd, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval));
   setsockopt(sock->fd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
   if (bind(sock->fd, (struct sockaddr *) bind_addr, addr_len) == -1) 
-    return luaL_error(L, "Unable to bind %s: %s", host, strerror(errno));
+    return luaL_error(L, "unable to bind %s: %s", host, strerror(errno));
   if (listen(sock->fd, 16) == -1)
-    return luaL_error(L, "Unable to listen %s: %s", host, strerror(errno));
+    return luaL_error(L, "unable to listen %s: %s", host, strerror(errno));
   if (un_bind_addr.sun_family == AF_UNIX) {
 		if (chmod(un_bind_addr.sun_path, S_IRUSR | S_IWUSR | S_IXUSR | S_IRGRP | S_IWGRP | S_IXGRP | S_IROTH | S_IWOTH | S_IXOTH))
-			return luaL_error(L, "Unable to chmod: %s", host, strerror(errno));
+			return luaL_error(L, "unable to chmod: %s", host, strerror(errno));
 	}
   return 1;
 }

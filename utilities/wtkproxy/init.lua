@@ -172,7 +172,12 @@ function Server.Request:forward(uri, options)
   if not options then options = {} end
   local PACKET_SIZE = options.chunk or 1024
   local protocol, hostname, port, url = Client.componentsURI(uri)
-  local agent = assert(Client:open(assert(protocol, { code = 400, message = "unable to parse uri: " .. uri }), hostname, port), { code = 502 })
+  local ip = hostname
+  if protocol ~= "unix" then
+    self.client.server.resolver = self.client.server.resolver or Client.resolver.new()
+    ip = assert(self.client.server.resolver:resolve(hostname), { code = 500, message = "unable to resolve " .. hostname })
+  end
+  local agent = assert(Client:open(assert(protocol, { code = 400, message = "unable to parse uri: " .. uri }), hostname, ip, port), { code = 502 })
   local headers = merge(self.headers or {}, {})
   if not options.suppress_forwards then
     headers['x-forwarded-host'] = self.headers.host
@@ -185,6 +190,7 @@ function Server.Request:forward(uri, options)
     method = options.method or self.method, 
     url = uri, 
     path = self.path,
+    search = self.search,
     headers = headers,
     body = options.method ~= "GET" and options.method ~= "HEAD" and function() return self:read(PACKET_SIZE) end 
   }), { code = 502 })
@@ -263,7 +269,7 @@ function proxy.render_text(text, request)
   if getmetatable(text) == Server.Template then
     return text:render({ request = request })
   elseif type(text) == 'table' then 
-    local t = {} for k,v in pairs(text) do t[k] = proxy.render_text(t[k], request) end return t 
+    local t = {} for k,v in pairs(text) do t[k] = proxy.render_text(v, request) end return t 
   end 
   return text 
 end
@@ -271,8 +277,8 @@ end
 function proxy.startup_process(execute)
   proxy.log:info("Spinning up executable for %s.", execute.bin[1])
   local process = proc.new(assert(execute.bin, "missing bin option"), { wd = execute.wd, uid = execute.user })
-  loop:job(function() while true do local chunk = process.stdout:read(1024) if not chunk then break end io.stdout:write(chunk) end end)
-  loop:job(function() while true do local chunk = process.stderr:read(1024) if not chunk then break end io.stderr:write(chunk) end end)
+  loop:job(function() while true do local chunk = process.stdout:read(1024) if not chunk then break end io.stdout:write(chunk) end end):fail(function(err) proxy.log:error("error in stdout job: %s", err) proxy.log:error("%s", err.stack) end)
+  loop:job(function() while true do local chunk = process.stderr:read(1024) if not chunk then break end io.stderr:write(chunk) end end):fail(function(err) proxy.log:error("error in stderr job: %s", err) proxy.log:error("%s", err.stack) end)
   return process
 end
 
@@ -322,6 +328,7 @@ function proxy.handler(self, request)
     coroutine.yield(target.spinup or 0.1)
   end
   local headers = proxy.render_text(target.headers, request)
+  local body = target.body and proxy.render_text(target.body, request)
   if target.handler then
     request.log:verbose("Running custom handler...")
     target.handler(self, request)
@@ -340,10 +347,10 @@ function proxy.handler(self, request)
   elseif target.redirect then
     local redirect = proxy.render_text(target.redirect, request)
     request.log:verbose("Redirecting to %s.", redirect)
-    request:redirect(redirect, headers)
+    request:redirect(redirect, headers, body)
   elseif target.code or target.body then
     request.log:verbose("Responding with code %d.", target.code or 200)
-    request:respond(tonumber(target.code or 200), headers, proxy.render_text(target.body or '', request))
+    request:respond(tonumber(target.code or 200), headers, body or '')
   else
     request.log:verbose("Unknown target action.", target.code)
     error({ code = 404 })
@@ -418,11 +425,11 @@ local function load_config(config)
     end
     for _, host in ipairs(hosts or {}) do host.jobs = map(function(v) 
       proxy.log:verbose("Spinning up job for " .. host.hostname[1] .. "...")
-      return loop:job(function() coroutine.yield() v(host, proxy) end):fail(function(err) proxy.log:error("%s", err) proxy.log:error("%s", err.stack) end)
+      return loop:job(function() coroutine.yield() v(host, proxy) end):fail(function(err) proxy.log:error("error in job %s", err) proxy.log:error("%s", err.stack) end)
     end, host.jobs or {}) end
   end
   if add_acme then table.insert(proxy.servers, Server.new(merge(args, { name = "ACME Server", port = 80, host = "0.0.0.0", handler = proxy.handler })):add(loop)) end
-  assert(#proxy.servers > 0, "you have listed no active servers")
+  assert(#proxy.servers > 0, "you have listed no active servers (missing --http or --https?)")
 end
 
 local function split(splitter, str)
@@ -457,7 +464,7 @@ local function load_arg_config(args)
   local config = { servers = {} }
   if args[1] ~= "--server" then table.insert(args, 1, "--server") end
   local array_keys = { server = 1, host = 2  }
-  local hash_keys = { location = 3 }
+  local hash_keys = { location = 3, headers = 3 }
   local target = { }
   local function get(orig, target) for i = 1, #target do if type(target[i]) == 'string' then for _, v in ipairs(split('%.', target[i])) do if not orig[v] then orig[v] = {} end orig = orig[v] end else orig = orig[target[i]] end end return orig end
   local function set(orig, target, value) 
@@ -478,7 +485,10 @@ local function load_arg_config(args)
     end
   end
   for i, arg in ipairs(args) do
-    if arg:find("^%-%-") then 
+    if arg == "--" then 
+      if not hash_keys[target[#target]] and type(target[#target]) ~= "number" then table.remove(target) end
+      table.remove(target)
+    elseif arg:find("^%-%-") then 
       if not hash_keys[target[#target]] and type(target[#target]) ~= "number" then table.remove(target) end
       local key = arg:sub(3)
       if array_keys[key] then
@@ -492,7 +502,8 @@ local function load_arg_config(args)
         table.insert(get(config, target), {})
         table.insert(target, #get(config, target))
       elseif hash_keys[key] then
-        set(config, target, arg)
+        table.insert(target, key)
+        set(config, target, value)
       else
         table.insert(target, key)
       end
