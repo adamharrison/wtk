@@ -525,19 +525,12 @@ function Server.Template.parse(str, name)
   local constructs = {}
   local offset, s, e = 1
   while true do
-    local sc, ec, ctrim = str:find("{%%%s*(%-?)", offset)
-    local so, eo, otrim = str:find("{{%s*(%-?)", offset)
-    if sc and (not so or sc < so) then
-      table.insert(constructs, literal_escape(trim(str:sub(offset, sc - 1), ctrim)))
-      s, e, _, ctrim = str:find("(%-?)%%}", ec)
-      table.insert(constructs, trim(str:sub(ec, assert(s, "can't find closing control block") - 1), ctrim))
-    elseif so and (not sc or so < sc) then
-      table.insert(constructs, literal_escape(trim(str:sub(offset, so - 1), otrim)))
-      s, e, _, otrim = str:find("(%-?)}}", eo)
-      table.insert(constructs, "table.insert(__contents, tostring(" .. trim(str:sub(eo, assert(s, "can't find closing output block") - 1), otrim) .. "))")
-    else
-      break
-    end
+    local start_brace, end_brace, brace_type, brace_trim = str:find("{([%%{])s*(%-?)", offset)
+    if not start_brace then break end
+    table.insert(constructs, literal_escape(trim(str:sub(offset, start_brace - 1), brace_trim)))
+    s, e, _, brace_trim = str:find("(%-?)" .. (brace_type == "%" and "%%" or "}") .. "}", end_brace + 1)
+    local chunk = trim(str:sub(end_brace + 1, assert(s, "can't find closing output block") - 1), brace_trim)
+    table.insert(constructs, brace_type == "{" and "table.insert(__contents, tostring(" .. chunk .. "))" or chunk)
     offset = e + 1
   end
   table.insert(constructs, literal_escape(str:sub(offset)))
