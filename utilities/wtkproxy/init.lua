@@ -286,11 +286,13 @@ function proxy.handler(self, request)
   request.host = request.headers.host and request.headers.host:gsub("%:%d+$", "")
   if request.headers.host and proxy.challenges[request.headers.host] then 
     local token = request.path:match("^/%.well%-known/acme%-challenge/([^/]+)$")
-    if token and proxy.challenges[request.headers.host][token] then 
-      proxy.log:info("Responding to challenge for %s at %s.", request.headers.host, token)
-      return request:respond(200, { ['Content-Type'] = "application/octet-stream" }, proxy.challenges[request.headers.host][token])
-    else
-      proxy.log:info("Unknown challenge attempt for %s at %s.", request.headers.host, token)
+    if token then
+      if proxy.challenges[request.headers.host][token] then 
+        proxy.log:info("Responding to challenge for %s at %s.", request.headers.host, token)
+        return request:respond(200, { ['Content-Type'] = "application/octet-stream" }, proxy.challenges[request.headers.host][token])
+      else
+        proxy.log:info("Unknown challenge attempt for %s at %s.", request.headers.host, token)
+      end
     end
   end
   local host = assert(self:get_host(request.headers.host), { code = 404, message = "can't find host " .. (request.headers.host or "unknown") })
@@ -446,7 +448,9 @@ end
 
 local function transpile_config(contents)
   contents = contents:gsub("\n%s*%/%/.-\n", "\n"):gsub("```(.-)```", function(e) return '"' .. table.concat(split("\n", e:gsub('"', '\\"')), "\\n") .. '"' end)
-  return assert(json.decode(contents))
+  local status, err = pcall(json.decode, contents)
+  if not status then error("failed to decode config: " .. contents .. ": " .. err) end
+  return err
 end
 
 local function load_config_path(path)

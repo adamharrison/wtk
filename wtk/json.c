@@ -1646,6 +1646,18 @@ static void json_next_token(json_parse_t *json, json_token_t *token)
     json_set_token_error(token, json, "invalid token");
 }
 
+static void json_convert_character_to_line_col(json_parse_t *json, int character, int* line, int* column) {
+    *line = 1;
+    *column = 0;
+    for (int i = 0; i < character - 1; ++i, ++(*column)) {
+        if (json->data[i] == '\n') {
+            (*line)++;
+            *column = 0;
+        }
+    }
+    (*column)++;
+}
+
 /* This function does not return.
  * DO NOT CALL WITH DYNAMIC MEMORY ALLOCATED.
  * The only supported exception is the temporary parser string
@@ -1664,9 +1676,12 @@ static void json_throw_parse_error(lua_State *l, json_parse_t *json,
     else
         found = json_token_type_name[token->type];
 
+    int line, col;
+    json_convert_character_to_line_col(json, token->index, &line, &col);
+
     /* Note: token->index is 0 based, display starting from 1 */
-    luaL_error(l, "Expected %s but found %s at character %d",
-               exp, found, token->index + 1);
+    luaL_error(l, "Expected %s but found %s at line %d, column %d (character %d)",
+               exp, found, line, col, token->index + 1);
 }
 
 static inline void json_decode_ascend(json_parse_t *json)
@@ -1684,7 +1699,9 @@ static void json_decode_descend(lua_State *l, json_parse_t *json, int slots)
     }
 
     strbuf_free(json->tmp);
-    luaL_error(l, "Found too many nested data structures (%d) at character %d",
+    int line, col;
+    json_convert_character_to_line_col(json, json->ptr - json->data, &line, &col);
+    luaL_error(l, "Found too many nested data structures (%d) at line %d, column %d (character %d)",
         json->current_depth, json->ptr - json->data);
 }
 
