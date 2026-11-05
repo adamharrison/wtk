@@ -138,7 +138,7 @@ function Request:__tostring() local s = {} table.insert(s, string.format("%s %s 
 function Request:parse_form(form)
   local params = {}
   for key,value in (form or self:body()):gmatch("([^=&%?]+)=([^&]+)") do 
-    value = value:gsub("%%([a-fA-F0-9][a-fA-F0-9])", function(e) return string.char(tonumber(e, 16)) end) 
+    value = value:gsub("%+", " "):gsub("%%([a-fA-F0-9][a-fA-F0-9])", function(e) return string.char(tonumber(e, 16)) end) 
     if params[key] then 
       if type(params[key]) ~= 'table' then
         params[key] = { params[key] }
@@ -528,13 +528,13 @@ function Server.Template.parse(str, name)
     local start_brace, end_brace, brace_type, brace_trim = str:find("{([%%{])s*(%-?)", offset)
     if not start_brace then break end
     table.insert(constructs, literal_escape(trim(str:sub(offset, start_brace - 1), brace_trim)))
-    s, e, _, brace_trim = str:find("(%-?)" .. (brace_type == "%" and "%%" or "}") .. "}", end_brace + 1)
+    s, e, brace_trim = str:find("(%-?)" .. (brace_type == "%" and "%%" or "}") .. "}", end_brace + 1)
     local chunk = trim(str:sub(end_brace + 1, assert(s, "can't find closing output block") - 1), brace_trim)
     table.insert(constructs, brace_type == "{" and "table.insert(__contents, tostring(" .. chunk .. "))" or chunk)
     offset = e + 1
   end
   table.insert(constructs, literal_escape(str:sub(offset)))
-  local t = setmetatable({ __contexts = {}, __builtins = { table = table, tostring = tostring, ipairs = ipairs, print = print, pairs = pairs, pcall = pcall, merge = merge, escape = function(str) return str:gsub("\"", "&quot;") end } }, Server.Template)
+  local t = setmetatable({ __contexts = {}, __builtins = { table = table, tostring = tostring, ipairs = ipairs, print = print, pairs = pairs, pcall = pcall, merge = merge, escape = function(str) return str:gsub("\"", "&quot;"):gsub("\\", "&bsol;") end } }, Server.Template)
   t.__builtins.set_context = function(value) t.__contexts[system.thread()] = value end
   local env = setmetatable({ }, { __index = function(_, k) return rawget(t.__builtins, k) or t.__contexts[system.thread()][k] end, __newindex = function(_, k, v) t.__contexts[system.thread()][k] = v end })
   local template_contents = "return function(params) set_context(merge({}, params))  local __contents = {}  pcall(function() " .. table.concat(constructs) .. " end) set_context(nil) return table.concat(__contents) end"

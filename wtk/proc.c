@@ -152,11 +152,17 @@ static int f_proc_status(lua_State* L) {
     int wait = lua_toboolean(L, 2);
     lua_getfield(L, 1, "pid");
     int pid = luaL_checkinteger(L, -1);
-    int status;
-    if (waitpid(pid, &status, wait ? 0 : WNOHANG) == 0)
-        return 0;
-    lua_pushinteger(L, WEXITSTATUS(status));
-    return 1;
+    int status = 0;
+    if (waitpid(pid, &status, wait ? 0 : WNOHANG) == -1) {
+        lua_pushnil(L);
+        lua_pushstring(L, strerror(errno));
+        return 2;
+    }
+    if (WIFEXITED(status)) {
+        lua_pushinteger(L, WEXITSTATUS(status));
+        return 1;
+    }
+    return 0;
 }
 
 
@@ -208,15 +214,18 @@ int luaopen_wtk_proc_c(lua_State* L) {
             end\n\
         end)\n\
         if options and options.stdin == false then p.stdin:close() end\n\
-        if options and options.stdin ~= nil then p.stdin:print(options.stdin) p.stdin:close() end\n\
+        if options and type(options.stdin) == 'string' then p.stdin:print(options.stdin) p.stdin:close() end\n\
         if options and options.stderr == false then p.stderr:close() end\n\
         if options and options.stdout == false then p.stdout:close() end\n\
         return p\n\
     end\n\
     function proc.run(prog, options)\n\
         local p = proc.new(prog, options)\n\
+        local chunks = {}\n\
+        while not p:status() do table.insert(chunks, p.stdout:read(10*1024)) end\n\
+        table.insert(chunks, p.stdout:read('*all'))\n\
         if p:join() ~= 0 then return nil, p.stderr:read('*all') end\n\
-        return p.stdout:read('*all')\n\
+        return table.concat(chunks)\n\
     end\n\
     setmetatable(proc, { __call = proc.new })\n\
     return proc"))

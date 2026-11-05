@@ -584,6 +584,7 @@ int luaopen_wtk_c(lua_State* L) {
 			end\n\
 			return self\n\
 	end\n\
+	function wtk.Stream:lines() return function() return self:read('*line') end end\n\
 	function wtk.Stream:flush() return self end\n\
 	function wtk.Stream:print(chunk, ...) return self:write(string.format(chunk .. '\\n', ...)) end\n\
 	function wtk.Stream:yield(...) coroutine.yield({ fd = self[0] or self[1], type = self[0] and self[1] and 'both' or (self[0] and 'read' or 'write') }, ...) end\n\
@@ -631,7 +632,13 @@ int luaopen_wtk_c(lua_State* L) {
 							else\n\
 									chunk = self:__read(16*1024, not yieldable)\n\
 							end\n\
-							if not chunk then break end\n\
+							if not chunk then\n\
+								if #chunks > 0 then\n\
+									break \n\
+								else\n\
+									return nil\n\
+								end\n\
+							end\n\
 							if #chunk > 0 then\n\
 									local s,e\n\
 									if target == 'l' then\n\
