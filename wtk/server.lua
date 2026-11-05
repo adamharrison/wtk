@@ -525,11 +525,11 @@ function Server.Template.parse(str, name)
   local constructs = {}
   local offset, s, e = 1
   while true do
-    local start_brace, end_brace, brace_type, brace_trim = str:find("{%([%%%{])s*(%-?)", offset)
+    local start_brace, end_brace, brace_type, brace_trim = str:find("{([%%{])s*(%-?)", offset)
     if not start_brace then break end
     table.insert(constructs, literal_escape(trim(str:sub(offset, start_brace - 1), brace_trim)))
-    s, e, _, brace_trim = str:find("(%-?)" .. (brace_type == "%" and "%%" or "}") .. "}", end_brace)
-    local chunk = trim(str:sub(eb, assert(s, "can't find closing output block") - 1), brace_trim)
+    s, e, _, brace_trim = str:find("(%-?)" .. (brace_type == "%" and "%%" or "}") .. "}", end_brace + 1)
+    local chunk = trim(str:sub(end_brace + 1, assert(s, "can't find closing output block") - 1), brace_trim)
     table.insert(constructs, brace_type == "{" and "table.insert(__contents, tostring(" .. chunk .. "))" or chunk)
     offset = e + 1
   end
