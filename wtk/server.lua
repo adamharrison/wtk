@@ -71,7 +71,7 @@ function Server.Response.new(code, headers, body) return setmetatable({ code = c
 function Server.Response:set_headers(headers) self.headers = merge(self.headers, headers) return self end
 function Server.Response:write_header(client)
   if client.closed then return end
-  local parts = { string.format("%s %d %s\r\n", "HTTP/1.1", self.code, client.server.codes[self.code]) }
+  local parts = { string.format("%s %d %s\r\n", "HTTP/1.1", self.code or 500, client.server.codes[self.code]) }
   if self.body and type(self.body) == 'string' and not self.headers['content-length'] and self.headers['transfer-encoding'] ~= 'chunked' then self.headers['content-length'] = #self.body end
   if not self.headers['connection'] or self.headers['connection']:find("^%s*$") then self.headers['connection'] = 'keep-alive' end
   if not self.headers['date'] or self.headers['date']:find("^%s*$") then self.headers['date'] = os.date("!%a, %d %b %Y %H:%M:%S GMT") end
@@ -95,6 +95,19 @@ function Server.Response:write_encoded(client, chunk)
     client:write_block(chunk)
   end
   return chunk and #chunk
+end
+
+function Server.Response:chunked(request, callback) -- convenience method
+  self.headers['transfer-encoding'] = 'chunked'
+  request.responded = true
+  self:write_header(request.client)
+  try(function() 
+    callback(function(chunk) self:write_encoded(request.client, chunk) end) 
+  end, function(err)
+    client.log:error("error writing chunks: " .. tostring(err))
+  end)
+  self:write_encoded(request.client, '')
+  return self
 end
 
 function Server.Response:write(client)
