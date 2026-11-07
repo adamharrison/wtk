@@ -571,6 +571,7 @@ int luaopen_wtk_c(lua_State* L) {
 	end\n\
 	function wtk.Stream:write(chunk)\n\
 			local yieldable = coroutine.isyieldable()\n\
+			chunk = tostring(chunk)\n\
 			while #chunk > 0 do\n\
 					local total_written = self:__write(chunk, not yieldable)\n\
 					if not total_written then\n\
