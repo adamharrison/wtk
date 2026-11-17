@@ -1,3 +1,9 @@
 [submodule "src/lua"]
 	path = lib/lua
 	url = https://github.com/lua/lua.git
+[submodule "lib/mbedtls"]
+	path = lib/mbedtls
+	url = https://github.com/Mbed-TLS/mbedtls.git
+[submodule "lib/sqlite"]
+	path = lib/sqlite
+	url = https://github.com/sqlite/sqlite.git

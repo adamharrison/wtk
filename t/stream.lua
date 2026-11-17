@@ -1,4 +1,5 @@
 local wtk = require "wtk"
+local proc = require "wtk.proc.c"
 
 local cr = coroutine.create(function()
   local f = wtk.io.file("/tmp/test", "wb")
@@ -18,6 +19,12 @@ local cr = coroutine.create(function()
     i = i + 1
   end
   assert(i == 5)
+  local result = proc.run({ "cat", "/tmp/test" })
+  assert(#result == 5444485)
+  local p = proc.new({ "cat", "/tmp/test" }, { stderr = false })
+  for line in p.stdout:lines() do
+    assert(#line == 1088896)
+  end
   return true
 end)
 

@@ -1,4 +1,4 @@
-package = "wtk.dbix.dbd.sqlite3"
+package = "wtk.dbd.sqlite3"
 version = "1.0-1"
 description = {
    summary = "The dbd for sqlite3 for dbix.",

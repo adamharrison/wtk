@@ -8,6 +8,7 @@
   #include <pthread.h>
   #include <netdb.h>
   #include <sys/socket.h>
+  #include <sys/un.h>
   #include <arpa/inet.h>
   #include <unistd.h>
   #include <fcntl.h>
@@ -18,6 +19,7 @@
 #include <time.h>
 #include <string.h>
 #include <math.h>
+#include <signal.h>
 #include <sys/stat.h>
 #include <mbedtls/sha256.h>
 #include <mbedtls/x509.h>
@@ -478,7 +480,7 @@ static int f_client_gc(lua_State* L) {
   return 0;
 }
 
-int luaW_loadstring(lua_State* L, const char* name, int offset, const char* str);
+int luaW_loadblock(lua_State* L, const char* name, int offset, const char* str);
 int luaopen_wtk_client_c(lua_State* L) {
   luaL_newlib(L, socket_lib);
   lua_pushvalue(L, -1);

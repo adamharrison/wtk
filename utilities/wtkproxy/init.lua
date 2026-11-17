@@ -300,10 +300,13 @@ function proxy.handler(self, request)
   local target = location or host
   local path = (remainder or request.path)
   if target.log then
-    local logfile = proxy.render_text(target.log, request)
-    if request.client.logfile ~= logfile then
-      request.client.log = Server.Log.new(args.verbose or false, assert(wtk.io.file(logfile, "ab")))
-      request.client.logfile = logfile
+    local logfiles = map(function(l) return proxy.render_text(l, request) end, arrayify(target.log))
+    for i = 1, #logfiles do
+      if not request.client.logfiles or request.client.logfiles[i] ~= logfiles[i] then
+        request.client.log = Server.Log.new(args.verbose or false, map(function(l) return wtk.io[l] or assert(wtk.io.file(l, "ab")) end, logfiles))
+        request.client.logfiles = logfiles
+        break
+      end
     end
     request.log = request.client.log
   end
@@ -357,7 +360,7 @@ function proxy.handler(self, request)
     request.log:verbose("Unknown target action.", target.code)
     error({ code = 404 })
   end
-  request.log._stream:flush()
+  for i, stream in ipairs(request.log._stream) do stream:flush() end
 end
 
 local function load_handler(handler, param_names)
@@ -371,7 +374,13 @@ local function load_handler(handler, param_names)
 end
 
 local function compute_templates(t)
-  for _, k in ipairs({ "forward", "static", "file", "redirect", "body", "log" }) do if t[k] ~= nil then t[k] = proxy.parse_text(t[k]) end end
+  for _, k in ipairs({ "forward", "static", "file", "redirect", "body", "log" }) do if t[k] ~= nil then 
+    if type(t[k]) == 'table' then
+      for i,v in ipairs(t[k]) do t[k][i] = proxy.parse_text(v) end
+    else
+      t[k] = proxy.parse_text(t[k]) 
+    end
+  end end
   if t.headers then for k, v in pairs(t.headers) do t.headers[k] = proxy.parse_text(v) end end
   return t
 end

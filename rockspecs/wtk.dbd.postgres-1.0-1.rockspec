@@ -1,4 +1,4 @@
-package = "wtk.dbix.dbd.postgres"
+package = "wtk.dbd.postgres"
 version = "1.0-1"
 description = {
    summary = "The dbd for postgres for dbix.",
