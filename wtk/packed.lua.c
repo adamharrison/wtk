@@ -5,4 +5,5 @@
 #ifndef WTK_UNPACKED
   #define WTK_UNPACKED
 #endif
+#include <stdlib.h>
 static void* luaW_packed[] = { NULL, NULL, NULL };

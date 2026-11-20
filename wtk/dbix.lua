@@ -111,7 +111,7 @@ end
 
 function connection.new(driver, options)
   local self = setmetatable({ }, connection)
-  self._driver = assert(type(driver) == 'string' and require("wtk.dbix.dbd." .. driver .. ".c") or driver, "can't find driver " .. driver)
+  self._driver = assert(type(driver) == 'string' and require("wtk.dbd." .. driver .. ".c") or driver, "can't find driver " .. driver)
   self._options = merge({ validate_types = true }, options or {})
   self._log = os.getenv("DBIX_TRACE") and function(self, msg) io.stderr:write(msg, "\n") end or options.log or false
   self._c = assert(self._driver:connect(options))

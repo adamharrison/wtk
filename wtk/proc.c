@@ -177,6 +177,7 @@ static const luaL_Reg f_proc_api[] = {
     { NULL,        NULL            }
 };
 
+int luaW_loadblock(lua_State* L, const char* name, int offset, const char* str);
 int luaopen_wtk_proc_c(lua_State* L) {
     luaL_newmetatable(L, "wtk.proc.c");
     luaL_setfuncs(L, f_proc_api, 0);

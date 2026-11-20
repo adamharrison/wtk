@@ -1,4 +1,4 @@
-package = "wtk.dbix.dbd.mysql"
+package = "wtk.dbd.mysql"
 version = "1.0-1"
 description = {
    summary = "The dbd for mysql for dbix.",
@@ -16,6 +16,6 @@ external_dependencies = {
 build = {
    type = "builtin",
    modules = {
-      ["wtk.dbix.dbd.mysql.c"] = { sources = {"wtk/dbd/mysql.c"}, libraries = {"mysqlclient"}, incdirs = {"$(LIBMYSQL_INCDIR)/mysql","wtk"}, libdirs = {"$(LIBMYSQL_LIBDIR)"} }
+      ["wtk.dbd.mysql.c"] = { sources = {"wtk/dbd/mysql.c"}, libraries = {"mysqlclient"}, incdirs = {"$(LIBMYSQL_INCDIR)/mysql","wtk"}, libdirs = {"$(LIBMYSQL_LIBDIR)"} }
    }
 }

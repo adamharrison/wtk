@@ -518,8 +518,8 @@ function Server:delete(path, func) return self:route("DELETE", path, func) end
 
 Server.Log = {}
 Server.Log.__index = Server.Log
-function Server.Log.new(verbose, stream) return setmetatable({ _verbose = verbose, _stream = stream or wtk.io.stdout }, Server.Log) end
-function Server.Log:log(type, message, ...) self._stream:write(string.format("[%5s][%s.%03d]: " .. message .. "\n", type, os.date("%Y-%m-%dT%H:%M:%S"), (math.floor(wtk.system.time() * 1000.0) % 1000), ...)):flush() end
+function Server.Log.new(verbose, stream) if stream and (type(stream) ~= 'table' or #stream == 0) then stream = { stream } end return setmetatable({ _verbose = verbose, _stream = stream or { wtk.io.stdout } }, Server.Log) end
+function Server.Log:log(type, message, ...) local msg = string.format("[%5s][%s.%03d]: " .. message .. "\n", type, os.date("%Y-%m-%dT%H:%M:%S"), (math.floor(wtk.system.time() * 1000.0) % 1000), ...) for i, stream in ipairs(self._stream) do stream:write(msg) end for i, stream in ipairs(self._stream) do stream:flush() end end
 function Server.Log:verbose(message, ...) if self._verbose then self:log("VERB", message, ...) end end
 function Server.Log:info(message, ...) self:log("INFO", message, ...) end
 function Server.Log:error(message, ...) self:log("ERROR", message, ...) end
