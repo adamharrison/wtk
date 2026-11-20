@@ -104,7 +104,7 @@ function Server.Response:chunked(request, callback) -- convenience method
   try(function() 
     callback(function(chunk) self:write_encoded(request.client, chunk) end) 
   end, function(err)
-    client.log:error("error writing chunks: " .. tostring(err))
+    request.client.log:error("error writing chunks: " .. tostring(err))
   end)
   self:write_encoded(request.client, '')
   return self
