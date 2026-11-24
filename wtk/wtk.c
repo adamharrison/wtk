@@ -407,6 +407,15 @@ static int f_system_rmdir(lua_State* L) {
 	return 1;
 }
 
+static int f_system_symlink(lua_State* L) {
+	if (symlink(luaL_checkstring(L, 1), luaL_checkstring(L, 2))) {
+		lua_pushnil(L);
+		lua_pushstring(L, strerror(errno));
+		return 2;
+	}
+	lua_pushboolean(L, 1);
+	return 1;
+}
 
 
 static int f_system_realpath(lua_State* L) {
@@ -422,12 +431,24 @@ static int f_system_realpath(lua_State* L) {
 
 static int f_system_stat(lua_State* L) {
 	struct stat file;
-	if (stat(luaL_checkstring(L, 1), &file)) {
+	if (lstat(luaL_checkstring(L, 1), &file)) {
 		lua_pushnil(L);
 		lua_pushstring(L, strerror(errno));
 		return 2;
 	}
 	lua_newtable(L);
+	if (S_ISLNK(file.st_mode)) {
+		if (stat(luaL_checkstring(L, 1), &file)) {
+			lua_pushnil(L);
+			lua_pushstring(L, strerror(errno));
+			return 2;
+		}
+		char path[PATH_MAX] = {0};
+		lua_pushliteral(L, "symlink");
+		realpath(luaL_checkstring(L, 1), path);
+		lua_pushstring(L, path);
+		lua_rawset(L, -3);
+	}
 	lua_pushnumber(L, file.st_mtime), lua_setfield(L, -2, "mtime");
 	lua_pushinteger(L, file.st_size), lua_setfield(L, -2, "size");
 	lua_pushstring(L, S_ISREG(file.st_mode) ? "file" : (S_ISDIR(file.st_mode) ? "dir" : (S_ISSOCK(file.st_mode) ? "socket" : "other"))), lua_setfield(L, -2, "type");
@@ -466,6 +487,7 @@ static const luaL_Reg system_lib[] = {
 	{ "ls",        f_system_ls      },
 	{ "mkdir",     f_system_mkdir   },
 	{ "rmdir",     f_system_rmdir   },
+	{ "symlink",   f_system_symlink },
 	{ "stat",      f_system_stat    },
 	{ "realpath",  f_system_realpath},
 	{ "time",      f_system_time    },
@@ -837,7 +859,9 @@ int luaopen_wtk_c(lua_State* L) {
 			for (int i = 0; luaW_packed[i]; i += 4) {
 				lua_pushstring(L, (strncmp(luaW_packed[i], directory, strlen(directory)) == 0) ? &luaW_packed[i][strlen(directory)+1] : luaW_packed[i]);
 				if (strcmp(luaW_packed[i+1], "lua") == 0)  {
-					if (luaL_loadbuffer(L, luaW_packed[i+2], (size_t)luaW_packed[i+3], luaW_packed[i])) {
+					char path[1024] = {0};
+					snprintf(path, sizeof(path), "%s.lua", luaW_packed[i]);
+					if (luaL_loadbuffer(L, luaW_packed[i+2], (size_t)luaW_packed[i+3], path)) {
 						lua_pushfstring(L, "error loading %s: %s", luaW_packed[i], lua_tostring(L, -1));
 						return -1;
 					}

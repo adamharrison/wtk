@@ -105,6 +105,7 @@ function Server.Response:chunked(request, callback) -- convenience method
     callback(function(chunk) self:write_encoded(request.client, chunk) end) 
   end, function(err)
     request.client.log:error("error writing chunks: " .. tostring(err))
+    request.client.log:verbose(err.stack)
   end)
   self:write_encoded(request.client, '')
   return self
@@ -396,7 +397,7 @@ function Server:default_error_handler(request, err, client, meta)
     msg = string.format("Unhandled Error: %s", err) 
     if request and not request.responded then request:respond(500, { ["Content-Type"] = "text/plain; charset=UTF-8" }, "500 Internal Server Error") end
   end
-  if self.verbose or not err.verbose then (request and request.log or client.log):error("%s", (self.verbose and (self.very_verbose or code == 500)) and (msg .. "\n" .. meta.stack) or msg) end
+  if self.verbose or not err.verbose then (request and request.log or client.log):error("%s", (self.verbose or code == 500) and (msg .. "\n" .. meta.stack) or msg) end
   if not request then client:close() end
   if request and request.client.websocket then request.client.websocket:close() end
 end
@@ -468,9 +469,9 @@ function Server:mimetype(file)
   return extension and self.mimes[extension] or "text/plain"
 end
 
-function Server:get_route(request)
-  for i, route in pairs(self.routes[request.method] or {}) do
-    local results = { request.path:match(route.path) }
+function Server:get_route(method, path)
+  for i, route in pairs(self.routes[method] or {}) do
+    local results = { path:match(route.path) }
     if results and #results > 0 then
       for i,v in ipairs(results) do if v == "" then results[i] = false end end
       return route, results
@@ -481,7 +482,7 @@ end
 
 function Server:default_handler(request)
   request.log:verbose("REQ %s %s %s", request.method, request.path, request.client.peer)
-  local route, arguments = self:get_route(request)
+  local route, arguments = self:get_route(request.method, request.path)
   if not route then return false end
   return true, route.handler(request, table.unpack(arguments))
 end
@@ -528,11 +529,11 @@ function Server.Log:warn(message, ...) self:log("WARN", message, ...) end
 Server.Template = {}
 Server.Template.__index = Server.Template
 function Server.Request:template(path, params) 
-  self.client.server.templates[path] = not self.client.server.debug and self.client.server.templates[path] or Server.Template.parse(assert(packed and packed[path] or assert(wtk.io.file(path), { code = 404 }):read("*all"), { code = 404 }), path) 
+  self.client.server.templates[path] = not self.client.server.debug and self.client.server.templates[path] or Server.Template.parse(assert(packed and packed[path] or assert(wtk.io.file(path), { code = 404, message = "unable to find template " .. path }):read("*all"), { code = 404 }), path) 
   return self:respond(200, { ["Content-Type"] = "text/html; charset=UTF-8" }, self.client.server.templates[path]:render(merge(params or {}, { request = self }))) 
 end
 local function literal_escape(str) return 'table.insert(__contents, "' .. (str:match("^(%s+)") or ""):gsub("\n", "\\n") .. '" .. [=[' .. str:gsub("]=]", ']=] .. "]=]" .. [=[') .. ']=])' end
-local function trim(str, trim) return trim and str:gsub("^%s+", "") or str end
+local function trim(str, trim) return trim and #trim > 0 and str:gsub("^%s+", "") or str end
 function Server.Template:render(params) return self.__render(params) end
 function Server.Template.parse(str, name)
   local constructs = {}
