@@ -438,14 +438,13 @@ static int f_system_stat(lua_State* L) {
 	}
 	lua_newtable(L);
 	if (S_ISLNK(file.st_mode)) {
-		if (stat(luaL_checkstring(L, 1), &file)) {
+		char path[PATH_MAX] = {0};
+		if (stat(luaL_checkstring(L, 1), &file) || !realpath(luaL_checkstring(L, 1), path)) {
 			lua_pushnil(L);
 			lua_pushstring(L, strerror(errno));
 			return 2;
 		}
-		char path[PATH_MAX] = {0};
 		lua_pushliteral(L, "symlink");
-		realpath(luaL_checkstring(L, 1), path);
 		lua_pushstring(L, path);
 		lua_rawset(L, -3);
 	}
