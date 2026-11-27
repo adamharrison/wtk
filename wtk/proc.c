@@ -153,12 +153,13 @@ static int f_proc_status(lua_State* L) {
     lua_getfield(L, 1, "pid");
     int pid = luaL_checkinteger(L, -1);
     int status = 0;
-    if (waitpid(pid, &status, wait ? 0 : WNOHANG) == -1) {
+    int res = waitpid(pid, &status, wait ? 0 : WNOHANG);
+    if (res == -1) {
         lua_pushnil(L);
         lua_pushstring(L, strerror(errno));
         return 2;
     }
-    if (WIFEXITED(status)) {
+    if (res && WIFEXITED(status)) {
         lua_pushinteger(L, WEXITSTATUS(status));
         return 1;
     }
